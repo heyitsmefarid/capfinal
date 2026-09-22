@@ -90,9 +90,9 @@ async function nextScholarIdSeq(db, yearPrefix) {
 // Creates a Firebase Auth account + active scholar `users` doc for each row.
 // The client sends rows in modest chunks so a large migration never hits the
 // function timeout, and accumulates the per-row results (incl. temp passwords).
-exports.bulkCreateScholars = onRequest(
-  { cors: true, timeoutSeconds: 300, memory: '512MiB' },
-  async (req, res) => {
+// Exported bare as well, so local-form-server.js can serve it on the Spark
+// plan, where Cloud Functions can't be deployed.
+async function bulkCreateScholarsHandler(req, res) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
     try {
@@ -262,5 +262,10 @@ exports.bulkCreateScholars = onRequest(
     } catch (err) {
       return handleError(res, err, 'bulkCreateScholars');
     }
-  }
+}
+
+exports.bulkCreateScholarsHandler = bulkCreateScholarsHandler;
+exports.bulkCreateScholars = onRequest(
+  { cors: true, timeoutSeconds: 300, memory: '512MiB' },
+  bulkCreateScholarsHandler
 );

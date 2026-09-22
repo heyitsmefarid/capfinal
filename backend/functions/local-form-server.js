@@ -18,6 +18,35 @@
 
 const http = require('http');
 const { fillBfcspForm } = require('./src/utils/bfcspForm');
+const { bulkCreateScholarsHandler } = require('./src/http/scholarImport');
+
+// The scholar import writes to Firestore and creates Auth accounts, so unlike
+// the PDF route it needs admin credentials: set GOOGLE_APPLICATION_CREDENTIALS
+// to a service-account key file (see scheduled-backup.js for how to get one).
+
+// Minimal Express-style req/res so the Cloud Function handler runs unchanged.
+function adaptRequest(req, body) {
+  return {
+    method: req.method,
+    body,
+    get: (name) => req.headers[String(name).toLowerCase()],
+  };
+}
+
+function adaptResponse(res) {
+  const adapted = {
+    status(code) {
+      res.statusCode = code;
+      return adapted;
+    },
+    json(payload) {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(payload));
+      return adapted;
+    },
+  };
+  return adapted;
+}
 
 // Hosting platforms assign the port via PORT and expect the process to bind to
 // it; FORM_PORT stays supported for existing local workflows.
@@ -26,7 +55,7 @@ const PORT = process.env.PORT || process.env.FORM_PORT || 8091;
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-key');
 }
 
 const server = http.createServer((req, res) => {
@@ -43,6 +72,25 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && (req.url === '/' || req.url.startsWith('/health'))) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ status: 'ok', service: 'bfcsp-form-server' }));
+  }
+
+  if (req.method === 'POST' && req.url.includes('bulkCreateScholars')) {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 20_000_000) req.destroy(); // guard
+    });
+    req.on('end', async () => {
+      let parsed;
+      try {
+        parsed = body ? JSON.parse(body) : {};
+      } catch (_) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      }
+      await bulkCreateScholarsHandler(adaptRequest(req, parsed), adaptResponse(res));
+    });
+    return;
   }
 
   if (req.method !== 'POST' || !req.url.includes('generateApplicationForm')) {
@@ -75,5 +123,6 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`BFCSP form server listening on port ${PORT}`);
   console.log('  POST /generateApplicationForm  → filled application PDF');
+  console.log('  POST /bulkCreateScholars       → scholar import (needs GOOGLE_APPLICATION_CREDENTIALS)');
   console.log('  GET  /                         → health check');
 });
