@@ -154,10 +154,19 @@ exports.bulkCreateScholars = onRequest(
           const yearLevel = String(parseInt(pick(row, 'Year Level', 'Year'), 10) || 1);
 
           const totalScholarshipSemesters = parseInt(pick(row, 'Total Scholarship Semesters'), 10) || 0;
-          const activeScholarshipSemesters = parseInt(pick(row, 'Active Scholarship Semesters'), 10) || 0;
+          const activeScholarshipSemesters =
+            parseInt(pick(row, 'Semesters Granted', 'Active Scholarship Semesters'), 10) || 0;
           if (activeScholarshipSemesters < 1) throw new Error('Active Scholarship Semesters must be at least 1');
-          const grantSchoolYear = computeGrantSchoolYear(currentTerm.yearStart, currentTerm.semesterIndex, activeScholarshipSemesters);
-          const yearAwarded = Number(grantSchoolYear.split('-')[0]);
+
+          const history = row.__history && typeof row.__history === 'object' ? row.__history : null;
+          const grades = Array.isArray(history?.grades) ? history.grades : [];
+          const enrolledSemesters = Array.isArray(history?.enrolledSemesters) ? history.enrolledSemesters : [];
+          const semestersGranted = history?.derived?.semestersUsed ?? activeScholarshipSemesters;
+
+          const grantSchoolYear =
+            history?.derived?.grantSchoolYear ||
+            computeGrantSchoolYear(currentTerm.yearStart, currentTerm.semesterIndex, activeScholarshipSemesters);
+          const yearAwarded = history?.derived?.yearAwarded || Number(grantSchoolYear.split('-')[0]);
           // academicYear previously shared its value with yearAwarded (both
           // derived from the old computeGrantYear() approximation) — keep
           // that same coupling, now driven by the precise algorithm above.
@@ -186,7 +195,7 @@ exports.bulkCreateScholars = onRequest(
             firstName,
             middleName,
             lastName,
-            suffix: '',
+            suffix: pick(row, 'Suffix'),
             email,
             schoolName: pick(row, 'School', 'School Name', 'HEI'),
             academicProgram: pick(row, 'Program', 'Course', 'Academic Program'),
@@ -198,8 +207,10 @@ exports.bulkCreateScholars = onRequest(
             scholarshipStatus,
             adminStatus,
             applicationStatus: 'approved',
-            semestersCompleted: activeScholarshipSemesters,
-            semestersUsed: activeScholarshipSemesters,
+            semestersCompleted: semestersGranted,
+            semestersUsed: semestersGranted,
+            grades,
+            enrolledSemesters,
             scholarId: suppliedScholarId || scholarId, // existing auto-generated scholarId used only when not supplied
             uid: userRecord.uid,
             totalScholarshipSemesters,
@@ -215,14 +226,16 @@ exports.bulkCreateScholars = onRequest(
             createdAt: now,
             createdBy: 'bulk-import',
             source: 'bulkImport',
-            // Profile fields left blank for the scholar to complete in-app.
+            // Profile fields from the migration sheet (previously left blank for
+            // the scholar to fill in-app).
+            dateOfBirth: pick(row, 'Date of Birth'),
+            gender: pick(row, 'Sex', 'Gender'),
+            contactNumber: pick(row, 'Contact Number'),
+            street: pick(row, 'Street'),
+            barangay: pick(row, 'Barangay'),
             houseNo: '',
-            street: '',
-            barangay: '',
             city: '',
             province: '',
-            gender: '',
-            contactNumber: '',
           });
 
           created++;
