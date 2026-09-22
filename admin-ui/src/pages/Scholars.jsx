@@ -819,12 +819,12 @@ export default function Scholars() {
     // Two worked semesters so staff can see the packed subject format.
     sample['SY1 School Year'] = '2023-2024';
     sample['SY1 Semester'] = '1st Semester';
-    sample['SY1 Subjects'] = 'Programming 1|3|1.75|Passed; Mathematics|3|2.00|Passed; PE 1|2|1.25|Passed';
+    sample['SY1 Subjects'] = 'IT101|Programming 1|3|1.75|Passed; GEC102|Mathematics|3|2.00|Passed; PE101|PE 1|2|1.25|Passed';
     sample['SY1 Amount Granted'] = '25000';
     sample['SY1 Status'] = 'Disbursed';
     sample['SY2 School Year'] = '2023-2024';
     sample['SY2 Semester'] = '2nd Semester';
-    sample['SY2 Subjects'] = 'Programming 2|3|1.50|Passed; Rizal|3|1.75|Passed';
+    sample['SY2 Subjects'] = 'IT102|Programming 2|3|1.50|Passed; GEC105|Rizal|3|1.75|Passed';
     sample['SY2 Amount Granted'] = '25000';
     sample['SY2 Status'] = 'Disbursed';
 

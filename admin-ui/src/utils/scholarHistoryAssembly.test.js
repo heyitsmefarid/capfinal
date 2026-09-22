@@ -26,31 +26,37 @@ test('returns no blocks when the header has none', () => {
   assert.deepEqual(discoverSemesterBlocks(['Email', 'Last Name']), []);
 });
 
-test('parses the full four-field subject form', () => {
-  const { subjects, errors } = parseSubjectCell('Math|3|1.75|Passed; English|3|2.00|Passed');
+test('parses the full five-field subject form, course code first', () => {
+  const { subjects, errors } = parseSubjectCell('MATH101|Math|3|1.75|Passed; ENG101|English|3|2.00|Passed');
   assert.deepEqual(errors, []);
   assert.deepEqual(subjects, [
-    { name: 'Math', units: 3, grade: 1.75, remarks: 'Passed' },
-    { name: 'English', units: 3, grade: 2.0, remarks: 'Passed' },
+    { code: 'MATH101', name: 'Math', units: 3, grade: 1.75, remarks: 'Passed' },
+    { code: 'ENG101', name: 'English', units: 3, grade: 2.0, remarks: 'Passed' },
   ]);
 });
 
 test('defaults remarks to Passed when omitted', () => {
-  const { subjects, errors } = parseSubjectCell('Math|3|1.75');
+  const { subjects, errors } = parseSubjectCell('MATH101|Math|3|1.75');
   assert.deepEqual(errors, []);
-  assert.deepEqual(subjects, [{ name: 'Math', units: 3, grade: 1.75, remarks: 'Passed' }]);
+  assert.deepEqual(subjects, [{ code: 'MATH101', name: 'Math', units: 3, grade: 1.75, remarks: 'Passed' }]);
 });
 
-test('treats a two-field subject as pending (no grade)', () => {
-  const { subjects, errors } = parseSubjectCell('Thesis|3');
+test('treats a three-field subject as pending (no grade)', () => {
+  const { subjects, errors } = parseSubjectCell('THS401|Thesis|3');
   assert.deepEqual(errors, []);
-  assert.deepEqual(subjects, [{ name: 'Thesis', units: 3, grade: null, remarks: '' }]);
+  assert.deepEqual(subjects, [{ code: 'THS401', name: 'Thesis', units: 3, grade: null, remarks: '' }]);
+});
+
+test('allows a blank course code when the slot is kept', () => {
+  const { subjects, errors } = parseSubjectCell('|Math|3|1.75|Passed');
+  assert.deepEqual(errors, []);
+  assert.deepEqual(subjects, [{ code: '', name: 'Math', units: 3, grade: 1.75, remarks: 'Passed' }]);
 });
 
 test('trims whitespace and ignores a trailing semicolon', () => {
-  const { subjects, errors } = parseSubjectCell('  Math | 3 | 1.75 | Passed ; ');
+  const { subjects, errors } = parseSubjectCell('  MATH101 | Math | 3 | 1.75 | Passed ; ');
   assert.deepEqual(errors, []);
-  assert.deepEqual(subjects, [{ name: 'Math', units: 3, grade: 1.75, remarks: 'Passed' }]);
+  assert.deepEqual(subjects, [{ code: 'MATH101', name: 'Math', units: 3, grade: 1.75, remarks: 'Passed' }]);
 });
 
 test('an empty cell yields no subjects and no errors', () => {
@@ -59,35 +65,43 @@ test('an empty cell yields no subjects and no errors', () => {
 });
 
 test('reports a wrong field count', () => {
-  const { subjects, errors } = parseSubjectCell('Math|3|1.75|Passed|extra');
+  const tooMany = parseSubjectCell('MATH101|Math|3|1.75|Passed|extra');
+  assert.deepEqual(tooMany.subjects, []);
+  assert.match(tooMany.errors[0], /entry 1 .*3-5 fields/);
+  assert.match(parseSubjectCell('Math|3').errors[0], /entry 1 .*3-5 fields/);
+});
+
+test('rejects the old format without a course code instead of misreading it', () => {
+  // Old 'Name|Units|Grade|Remarks' would otherwise read as code=Math, name=3.
+  const { subjects, errors } = parseSubjectCell('Math|3|1.75|Passed');
   assert.deepEqual(subjects, []);
-  assert.match(errors[0], /entry 1 .*2-4 fields/);
+  assert.match(errors[0], /course code goes first/i);
 });
 
 test('reports non-numeric units and grade', () => {
-  const units = parseSubjectCell('Math|three|1.75|Passed');
+  const units = parseSubjectCell('MATH101|Math|three|1.75|Passed');
   assert.match(units.errors[0], /Units must be a number/);
-  const grade = parseSubjectCell('Math|3|abc|Passed');
+  const grade = parseSubjectCell('MATH101|Math|3|abc|Passed');
   assert.match(grade.errors[0], /Grade must be a number/);
 });
 
 test('reports zero or negative units', () => {
-  const { errors } = parseSubjectCell('Math|0|1.75|Passed');
-  assert.match(errors[0], /Units must be a number greater than 0/);
+  assert.match(parseSubjectCell('MATH101|Math|0|1.75|Passed').errors[0], /Units must be a number greater than 0/);
+  assert.match(parseSubjectCell('MATH101|Math|-3|1.75|Passed').errors[0], /Units must be a number greater than 0/);
 });
 
 test('reports an unrecognized remarks value', () => {
-  const { errors } = parseSubjectCell('Math|3|1.75|Excellent');
+  const { errors } = parseSubjectCell('MATH101|Math|3|1.75|Excellent');
   assert.match(errors[0], /Remarks must be one of/);
 });
 
 test('reports a missing subject name', () => {
-  const { errors } = parseSubjectCell('|3|1.75|Passed');
+  const { errors } = parseSubjectCell('MATH101||3|1.75|Passed');
   assert.match(errors[0], /missing subject name/);
 });
 
 test('reports a duplicate subject within the same term', () => {
-  const { errors } = parseSubjectCell('Math|3|1.75|Passed; math|3|2.00|Passed');
+  const { errors } = parseSubjectCell('MATH101|Math|3|1.75|Passed; MATH102|math|3|2.00|Passed');
   assert.ok(errors.some((e) => /duplicate subject/i.test(e)));
 });
 
@@ -107,10 +121,10 @@ test('termEnrolledAt orders 1st before 2nd semester, and years in sequence', () 
 test('assembles grades and enrolledSemesters from two filled blocks', () => {
   const row = {
     'SY1 School Year': '2023-2024', 'SY1 Semester': '1st Semester',
-    'SY1 Subjects': 'Math|3|1.00|Passed; English|3|2.00|Passed',
+    'SY1 Subjects': 'SUB1|Math|3|1.00|Passed; SUB2|English|3|2.00|Passed',
     'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
     'SY2 School Year': '2023-2024', 'SY2 Semester': '2nd Semester',
-    'SY2 Subjects': 'Rizal|3|1.50|Passed',
+    'SY2 Subjects': 'SUB1|Rizal|3|1.50|Passed',
     'SY2 Amount Granted': '25000', 'SY2 Status': 'Disbursed',
   };
   const { grades, enrolledSemesters, derived, errors } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
@@ -132,9 +146,9 @@ test('assembles grades and enrolledSemesters from two filled blocks', () => {
 test('an on-hold block is recorded with a zero amount and excluded from semestersUsed', () => {
   const row = {
     'SY1 School Year': '2023-2024', 'SY1 Semester': '1st Semester',
-    'SY1 Subjects': 'Math|3|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+    'SY1 Subjects': 'SUB1|Math|3|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
     'SY2 School Year': '2023-2024', 'SY2 Semester': '2nd Semester',
-    'SY2 Subjects': 'Math|3|5.00|Failed', 'SY2 Amount Granted': '25000', 'SY2 Status': 'On Hold',
+    'SY2 Subjects': 'SUB1|Math|3|5.00|Failed', 'SY2 Amount Granted': '25000', 'SY2 Status': 'On Hold',
   };
   const { enrolledSemesters, derived } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
   assert.equal(enrolledSemesters[1].status, 'on_hold');
@@ -145,7 +159,7 @@ test('an on-hold block is recorded with a zero amount and excluded from semester
 test('skips an empty block slot', () => {
   const row = {
     'SY1 School Year': '2023-2024', 'SY1 Semester': '1st Semester',
-    'SY1 Subjects': 'Math|3|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+    'SY1 Subjects': 'SUB1|Math|3|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
     'SY2 School Year': '', 'SY2 Semester': '', 'SY2 Subjects': '', 'SY2 Amount Granted': '', 'SY2 Status': '',
   };
   const { grades, enrolledSemesters, errors } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
@@ -157,7 +171,7 @@ test('skips an empty block slot', () => {
 test('a block with subjects but no grade values still produces a term with a null gwa', () => {
   const row = {
     'SY1 School Year': '2023-2024', 'SY1 Semester': '1st Semester',
-    'SY1 Subjects': 'Thesis|3', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+    'SY1 Subjects': 'SUB1|Thesis|3', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
   };
   const { grades } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
   assert.equal(grades[0].gwa, null);
@@ -166,7 +180,7 @@ test('a block with subjects but no grade values still produces a term with a nul
 test('propagates subject-cell errors prefixed with the block name', () => {
   const row = {
     'SY1 School Year': '2023-2024', 'SY1 Semester': '1st Semester',
-    'SY1 Subjects': 'Math|three|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+    'SY1 Subjects': 'SUB1|Math|three|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
   };
   const { errors } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
   assert.match(errors[0], /^SY1 Subjects/);
@@ -175,9 +189,9 @@ test('propagates subject-cell errors prefixed with the block name', () => {
 test('sorts terms chronologically even when the blocks are filled out of order', () => {
   const row = {
     'SY1 School Year': '2024-2025', 'SY1 Semester': '1st Semester',
-    'SY1 Subjects': 'Math|3|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+    'SY1 Subjects': 'SUB1|Math|3|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
     'SY2 School Year': '2023-2024', 'SY2 Semester': '1st Semester',
-    'SY2 Subjects': 'English|3|1.00|Passed', 'SY2 Amount Granted': '25000', 'SY2 Status': 'Disbursed',
+    'SY2 Subjects': 'SUB1|English|3|1.00|Passed', 'SY2 Amount Granted': '25000', 'SY2 Status': 'Disbursed',
   };
   const { enrolledSemesters, derived } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
   assert.equal(enrolledSemesters[0].schoolYear, '2023-2024');
@@ -186,7 +200,7 @@ test('sorts terms chronologically even when the blocks are filled out of order',
 });
 
 test('rejects Incomplete and Other remarks — only Passed and Failed are allowed', () => {
-  assert.match(parseSubjectCell('Math|3|3.00|Incomplete').errors[0], /Remarks must be one of Passed, Failed/);
-  assert.match(parseSubjectCell('Math|3|3.00|Other').errors[0], /Remarks must be one of Passed, Failed/);
-  assert.deepEqual(parseSubjectCell('Math|3|5.00|Failed').errors, []);
+  assert.match(parseSubjectCell('SUB1|Math|3|3.00|Incomplete').errors[0], /Remarks must be one of Passed, Failed/);
+  assert.match(parseSubjectCell('SUB1|Math|3|3.00|Other').errors[0], /Remarks must be one of Passed, Failed/);
+  assert.deepEqual(parseSubjectCell('SUB1|Math|3|5.00|Failed').errors, []);
 });

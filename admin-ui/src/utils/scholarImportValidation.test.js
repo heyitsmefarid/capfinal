@@ -65,9 +65,9 @@ const historyRow = {
   'Semesters Granted': '2',
   'Total Scholarship Semesters': '8',
   'SY1 School Year': '2023-2024', 'SY1 Semester': '1st Semester',
-  'SY1 Subjects': 'Math|3|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+  'SY1 Subjects': 'SUB1|Math|3|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
   'SY2 School Year': '2023-2024', 'SY2 Semester': '2nd Semester',
-  'SY2 Subjects': 'Rizal|3|1.50|Passed', 'SY2 Amount Granted': '25000', 'SY2 Status': 'Disbursed',
+  'SY2 Subjects': 'SUB1|Rizal|3|1.50|Passed', 'SY2 Amount Granted': '25000', 'SY2 Status': 'Disbursed',
 };
 const noExisting = { existingEmails: new Set(), existingScholarIds: new Set() };
 
@@ -132,7 +132,7 @@ test('blocks a block that has subjects but no amount', () => {
 });
 
 test('surfaces packed-cell errors on the row', () => {
-  const row = { ...historyRow, 'SY1 Subjects': 'Math|three|1.00|Passed' };
+  const row = { ...historyRow, 'SY1 Subjects': 'SUB1|Math|three|1.00|Passed' };
   const [result] = validateImportRows([row], noExisting);
   assert.ok(result.errors.some((e) => /SY1 Subjects/.test(e)));
 });

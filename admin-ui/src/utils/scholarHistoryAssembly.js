@@ -28,9 +28,11 @@ export function discoverSemesterBlocks(headerKeys) {
 }
 
 // One term's subjects, packed into a single cell as
-// `Name|Units|Grade|Remarks; Name|Units|Grade|Remarks`. Grade and Remarks are
-// optional (2-4 fields) — a subject with no grade is "pending" and correctly
-// falls out of computeGwa.
+// `Code|Name|Units|Grade|Remarks; Code|Name|Units|Grade|Remarks`. Grade and
+// Remarks are optional (3-5 fields) — a subject with no grade is "pending" and
+// correctly falls out of computeGwa. The code may be blank, but its slot must
+// be there: without it `Math|3|1.75|Passed` would silently read as a subject
+// named "3" with code "Math".
 export function parseSubjectCell(cell) {
   const raw = String(cell ?? '').trim();
   if (!raw) return { subjects: [], errors: [] };
@@ -42,14 +44,18 @@ export function parseSubjectCell(cell) {
     const label = `entry ${i + 1}`;
     const parts = entry.split('|').map((p) => p.trim());
 
-    if (parts.length < 2 || parts.length > 4) {
-      errors.push(`${label} — expected Name|Units|Grade|Remarks (2-4 fields), got ${parts.length}`);
+    if (parts.length < 3 || parts.length > 5) {
+      errors.push(`${label} — expected Code|Name|Units|Grade|Remarks (3-5 fields), got ${parts.length}`);
       return;
     }
 
-    const [name, unitsRaw, gradeRaw = '', remarksRaw = ''] = parts;
+    const [code, name, unitsRaw, gradeRaw = '', remarksRaw = ''] = parts;
     if (!name) {
       errors.push(`${label} — missing subject name`);
+      return;
+    }
+    if (/^\d+(\.\d+)?$/.test(name)) {
+      errors.push(`${label} — subject name reads as the number "${name}": the course code goes first, as Code|Name|Units|Grade|Remarks`);
       return;
     }
 
@@ -78,7 +84,7 @@ export function parseSubjectCell(cell) {
       return;
     }
 
-    subjects.push({ name, units, grade, remarks });
+    subjects.push({ code, name, units, grade, remarks });
   });
 
   const seen = new Set();
