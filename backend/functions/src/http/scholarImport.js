@@ -229,6 +229,9 @@ async function bulkCreateScholarsHandler(req, res) {
             grantSchoolYear,
             yearAwarded, // replaces the old computeGrantYear() value — same field, new derivation
             mustChangePassword: true,
+            // Imported scholars were approved long before this system existed —
+            // the app's one-time approval celebration isn't for them.
+            celebrationSeen: true,
             activatedAt: null,
             lastLogin: null,
             passwordChangedAt: null,
