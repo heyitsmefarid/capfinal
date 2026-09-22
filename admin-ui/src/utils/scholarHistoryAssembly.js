@@ -3,6 +3,8 @@
 // explicit params, matching the utils/granting.js convention, so the whole
 // import can be unit-tested without Firestore or a browser.
 
+import { computeGwa } from './academicRecords.js';
+
 export const VALID_REMARKS = ['Passed', 'Failed', 'Incomplete', 'Other'];
 
 // Blocks are discovered from the header rather than hardcoded, so an admin who
@@ -83,4 +85,73 @@ export function parseSubjectCell(cell) {
   }
 
   return { subjects, errors };
+}
+
+// A synthetic enrollment timestamp derived from the term itself. getGrantBreakdown
+// sorts enrolledSemesters by `enrolledAt`, so migrated terms need one that orders
+// correctly: 1st Semester starts in August of the school year's first year, 2nd
+// Semester in January of its second.
+export function termEnrolledAt(schoolYear, semester) {
+  const startYear = Number(String(schoolYear).split('-')[0]);
+  const isSecond = String(semester).trim() === '2nd Semester';
+  const year = isSecond ? startYear + 1 : startYear;
+  const month = isSecond ? 0 : 7;
+  return new Date(Date.UTC(year, month, 1)).toISOString();
+}
+
+// Turns one wide sheet row into the arrays the app already renders. Terms come
+// back in chronological order regardless of the order the blocks were filled in.
+export function assembleScholarHistory(row, blocks) {
+  const grades = [];
+  const enrolledSemesters = [];
+  const errors = [];
+
+  for (const block of blocks) {
+    const schoolYear = String(row[block.yearKey] ?? '').trim();
+    const semester = String(row[block.semesterKey] ?? '').trim();
+    const subjectsCell = String(row[block.subjectsKey] ?? '').trim();
+    const amountCell = String(row[block.amountKey] ?? '').trim();
+    const statusCell = String(row[block.statusKey] ?? '').trim();
+
+    // A completely blank slot is "no history here", not an error.
+    if (!schoolYear && !semester && !subjectsCell && !amountCell && !statusCell) continue;
+
+    const { subjects, errors: subjectErrors } = parseSubjectCell(subjectsCell);
+    for (const message of subjectErrors) errors.push(`${block.prefix} Subjects, ${message}`);
+
+    const onHold = statusCell.toLowerCase().includes('hold');
+    const amount = Number(amountCell || 0);
+
+    if (subjects.length > 0) {
+      grades.push({ schoolYear, semester, subjects, gwa: computeGwa(subjects) });
+    }
+
+    enrolledSemesters.push({
+      schoolYear,
+      semester,
+      grantedAmount: onHold ? 0 : (Number.isFinite(amount) ? amount : 0),
+      status: onHold ? 'on_hold' : 'disbursed',
+      enrolledAt: termEnrolledAt(schoolYear, semester),
+    });
+  }
+
+  enrolledSemesters.sort((a, b) => a.enrolledAt.localeCompare(b.enrolledAt));
+  grades.sort((a, b) =>
+    termEnrolledAt(a.schoolYear, a.semester).localeCompare(termEnrolledAt(b.schoolYear, b.semester))
+  );
+
+  const earliest = enrolledSemesters[0] || null;
+  const latest = enrolledSemesters[enrolledSemesters.length - 1] || null;
+
+  return {
+    grades,
+    enrolledSemesters,
+    errors,
+    derived: {
+      semestersUsed: enrolledSemesters.filter((e) => e.status === 'disbursed').length,
+      grantSchoolYear: earliest ? earliest.schoolYear : null,
+      yearAwarded: earliest ? Number(String(earliest.schoolYear).split('-')[0]) : null,
+      latestSemester: latest ? latest.semester : null,
+    },
+  };
 }

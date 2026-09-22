@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { discoverSemesterBlocks, parseSubjectCell } from './scholarHistoryAssembly.js';
+import { discoverSemesterBlocks, parseSubjectCell, assembleScholarHistory, termEnrolledAt } from './scholarHistoryAssembly.js';
 
 test('discovers semester blocks from the header, sorted by number', () => {
   const header = [
@@ -89,4 +89,98 @@ test('reports a missing subject name', () => {
 test('reports a duplicate subject within the same term', () => {
   const { errors } = parseSubjectCell('Math|3|1.75|Passed; math|3|2.00|Passed');
   assert.ok(errors.some((e) => /duplicate subject/i.test(e)));
+});
+
+const BLOCK_HEADER = [
+  'SY1 School Year', 'SY1 Semester', 'SY1 Subjects', 'SY1 Amount Granted', 'SY1 Status',
+  'SY2 School Year', 'SY2 Semester', 'SY2 Subjects', 'SY2 Amount Granted', 'SY2 Status',
+];
+
+test('termEnrolledAt orders 1st before 2nd semester, and years in sequence', () => {
+  const first = termEnrolledAt('2023-2024', '1st Semester');
+  const second = termEnrolledAt('2023-2024', '2nd Semester');
+  const nextYear = termEnrolledAt('2024-2025', '1st Semester');
+  assert.ok(first < second);
+  assert.ok(second < nextYear);
+});
+
+test('assembles grades and enrolledSemesters from two filled blocks', () => {
+  const row = {
+    'SY1 School Year': '2023-2024', 'SY1 Semester': '1st Semester',
+    'SY1 Subjects': 'Math|3|1.00|Passed; English|3|2.00|Passed',
+    'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+    'SY2 School Year': '2023-2024', 'SY2 Semester': '2nd Semester',
+    'SY2 Subjects': 'Rizal|3|1.50|Passed',
+    'SY2 Amount Granted': '25000', 'SY2 Status': 'Disbursed',
+  };
+  const { grades, enrolledSemesters, derived, errors } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
+
+  assert.deepEqual(errors, []);
+  assert.equal(grades.length, 2);
+  assert.equal(grades[0].schoolYear, '2023-2024');
+  assert.equal(grades[0].subjects.length, 2);
+  assert.equal(grades[0].gwa, '1.50');
+  assert.equal(enrolledSemesters.length, 2);
+  assert.equal(enrolledSemesters[0].grantedAmount, 25000);
+  assert.equal(enrolledSemesters[0].status, 'disbursed');
+  assert.equal(derived.semestersUsed, 2);
+  assert.equal(derived.grantSchoolYear, '2023-2024');
+  assert.equal(derived.yearAwarded, 2023);
+  assert.equal(derived.latestSemester, '2nd Semester');
+});
+
+test('an on-hold block is recorded with a zero amount and excluded from semestersUsed', () => {
+  const row = {
+    'SY1 School Year': '2023-2024', 'SY1 Semester': '1st Semester',
+    'SY1 Subjects': 'Math|3|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+    'SY2 School Year': '2023-2024', 'SY2 Semester': '2nd Semester',
+    'SY2 Subjects': 'Math|3|5.00|Failed', 'SY2 Amount Granted': '25000', 'SY2 Status': 'On Hold',
+  };
+  const { enrolledSemesters, derived } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
+  assert.equal(enrolledSemesters[1].status, 'on_hold');
+  assert.equal(enrolledSemesters[1].grantedAmount, 0);
+  assert.equal(derived.semestersUsed, 1);
+});
+
+test('skips an empty block slot', () => {
+  const row = {
+    'SY1 School Year': '2023-2024', 'SY1 Semester': '1st Semester',
+    'SY1 Subjects': 'Math|3|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+    'SY2 School Year': '', 'SY2 Semester': '', 'SY2 Subjects': '', 'SY2 Amount Granted': '', 'SY2 Status': '',
+  };
+  const { grades, enrolledSemesters, errors } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
+  assert.deepEqual(errors, []);
+  assert.equal(grades.length, 1);
+  assert.equal(enrolledSemesters.length, 1);
+});
+
+test('a block with subjects but no grade values still produces a term with a null gwa', () => {
+  const row = {
+    'SY1 School Year': '2023-2024', 'SY1 Semester': '1st Semester',
+    'SY1 Subjects': 'Thesis|3', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+  };
+  const { grades } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
+  assert.equal(grades[0].gwa, null);
+});
+
+test('propagates subject-cell errors prefixed with the block name', () => {
+  const row = {
+    'SY1 School Year': '2023-2024', 'SY1 Semester': '1st Semester',
+    'SY1 Subjects': 'Math|three|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+  };
+  const { errors } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
+  assert.match(errors[0], /^SY1 Subjects/);
+});
+
+test('sorts terms chronologically even when the blocks are filled out of order', () => {
+  const row = {
+    'SY1 School Year': '2024-2025', 'SY1 Semester': '1st Semester',
+    'SY1 Subjects': 'Math|3|1.00|Passed', 'SY1 Amount Granted': '25000', 'SY1 Status': 'Disbursed',
+    'SY2 School Year': '2023-2024', 'SY2 Semester': '1st Semester',
+    'SY2 Subjects': 'English|3|1.00|Passed', 'SY2 Amount Granted': '25000', 'SY2 Status': 'Disbursed',
+  };
+  const { enrolledSemesters, derived } = assembleScholarHistory(row, discoverSemesterBlocks(BLOCK_HEADER));
+  assert.equal(enrolledSemesters[0].schoolYear, '2023-2024');
+  assert.equal(derived.grantSchoolYear, '2023-2024');
+  assert.equal(derived.yearAwarded, 2023);
 });
