@@ -34,10 +34,18 @@ import {
 
 const menuItems = [
   { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  // Flat link — this used to be a dropdown with a single child, an extra
-  // click to the same one destination.
-  { path: '/applications', icon: FileText, label: 'Applications', roles: ['admin', 'staff'] },
-  { path: '/needs-verification', icon: ShieldAlert, label: 'Needs Verification', roles: ['admin', 'staff'] },
+  // A dropdown again now that it has a second destination: Needs Verification
+  // is applicant paperwork awaiting review, so it belongs with Applications
+  // rather than as its own top-level entry.
+  {
+    icon: FileText,
+    label: 'Applications',
+    roles: ['admin', 'staff'],
+    submenu: [
+      { path: '/applications', icon: FileText, label: 'Applications List' },
+      { path: '/needs-verification', icon: ShieldAlert, label: 'Needs Verification' },
+    ],
+  },
   {
     icon: Users,
     label: 'Scholars',
@@ -102,7 +110,12 @@ export default function Sidebar({ mobileMenuOpen, onClose, onLogout }) {
   const { sidebarCollapsed, setSidebarCollapsed, theme, toggleTheme } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
-  const [expandedMenu, setExpandedMenu] = useState(null);
+  // Start with the group that owns the landing page open, so a nested page
+  // (reached by URL or a reload) doesn't leave its parent collapsed with no
+  // sign of where it lives. After that the admin's own toggling wins.
+  const [expandedMenu, setExpandedMenu] = useState(
+    () => menuItems.find((item) => item.submenu?.some((sub) => sub.path === location.pathname))?.label ?? null
+  );
   const role = getRole();
   const adminUser = getUsername();
   const roleLabel = getRoleLabel();
