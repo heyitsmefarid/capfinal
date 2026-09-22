@@ -174,6 +174,14 @@ async function bulkCreateScholarsHandler(req, res) {
           const countedTerms = importedDuringTerm ? [...grantedTerms, importedDuringTerm] : grantedTerms;
           const semestersGranted = history ? grantedTerms.length : activeScholarshipSemesters;
 
+          // Migrated grades are copied from the office's existing records, so
+          // they arrive already confirmed — same shape the admin's "Confirm
+          // Grades" writes — instead of queueing for review.
+          const confirmedAt = new Date().toISOString();
+          const gradesEvaluation = Object.fromEntries(
+            grades.map((g) => [`${g.schoolYear}::${g.semester}`, { status: 'confirmed', evaluatedAt: confirmedAt }])
+          );
+
           const grantSchoolYear =
             history?.derived?.grantSchoolYear ||
             computeGrantSchoolYear(currentTerm.yearStart, currentTerm.semesterIndex, activeScholarshipSemesters);
@@ -222,7 +230,7 @@ async function bulkCreateScholarsHandler(req, res) {
             semestersUsed: semestersGranted,
             grades,
             enrolledSemesters,
-            ...(history ? { countedTerms, importedDuringTerm } : {}),
+            ...(history ? { countedTerms, importedDuringTerm, gradesEvaluation } : {}),
             scholarId: suppliedScholarId || scholarId, // existing auto-generated scholarId used only when not supplied
             uid: userRecord.uid,
             totalScholarshipSemesters,
