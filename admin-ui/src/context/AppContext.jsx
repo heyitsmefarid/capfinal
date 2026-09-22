@@ -369,6 +369,9 @@ const mapStudentToApplicant = (student) => {
     // authoritative history from one-time data-fix effects below.
     source: student.source ?? null,
     createdBy: student.createdBy ?? null,
+    // The term active when a migrated scholar was imported. Their sheet history
+    // is the complete count, so that term must never add a semester.
+    importedDuringTerm: student.importedDuringTerm ?? null,
   };
 };
 
@@ -1791,18 +1794,23 @@ export function AppProvider({ children }) {
 
     const needsCounting = (a) => {
       const isActiveScholar = a.status === 'approved' || a.status === 'active' || a.status === 'on-hold';
+      if (a.importedDuringTerm === termKey) return false;
       return isActiveScholar && !(a.countedTerms || []).includes(termKey);
     };
 
     const bump = (a) => {
       let baseCountedTerms = Array.isArray(a.countedTerms) ? a.countedTerms : [];
+      // Migrated scholars' countedTerms come from their sheet history and are
+      // already complete — legacy reconstruction would pair their earliest
+      // school year with their latest semester and invent terms.
+      const isMigrated = a.source === 'bulkImport' || a.createdBy === 'bulk-import';
       // Union in the reconstructed historical range for scholars with a
       // legacy legacyLastCountedTerm marker — a Set union is safe/idempotent
       // regardless of whatever's already in countedTerms, and self-heals if
       // it was ever incompletely populated (e.g. a scholar whose countedTerms
       // only ever picked up the term active at the moment they were first
       // touched under this scheme, before this reconstruction existed).
-      if (a.legacyLastCountedTerm || (a.semestersUsed || 0) > 0) {
+      if (!isMigrated && (a.legacyLastCountedTerm || (a.semestersUsed || 0) > 0)) {
         baseCountedTerms = Array.from(new Set([...baseCountedTerms, ...reconstructLegacyTerms(a)]));
       }
 
@@ -1866,6 +1874,7 @@ export function AppProvider({ children }) {
     const keyOf = (a) => a.firestoreId || a.scholarId || String(a.id);
     const semLimit = systemSettings.numberOfSemesters || 8;
     const toFix = applicants.filter((a) => {
+      if (a.source === 'bulkImport' || a.createdBy === 'bulk-import') return false;
       if (!a.legacyLastCountedTerm && !(a.semestersUsed > 0)) return false;
       const reconstructed = reconstructLegacyTerms(a);
       const current = new Set(a.countedTerms || []);

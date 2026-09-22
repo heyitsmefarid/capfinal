@@ -10,7 +10,8 @@ async function getCurrentSchoolYearAndSemester(db) {
   if (!activeSemester) return null;
 
   const semesterIndex = Number(activeSemester.order) === 2 ? 2 : 1;
-  return { yearStart: Number(yearDoc.startYear), semesterIndex };
+  // termKey matches the admin panel's countedTerms format (`${sy.label}::${sem.name}`).
+  return { yearStart: Number(yearDoc.startYear), semesterIndex, termKey: `${yearDoc.label}::${activeSemester.name}` };
 }
 
 module.exports = { getCurrentSchoolYearAndSemester };
