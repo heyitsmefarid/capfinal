@@ -1,27 +1,89 @@
+import { discoverSemesterBlocks, assembleScholarHistory } from './scholarHistoryAssembly.js';
+
+const VALID_SEMESTERS = ['1st Semester', '2nd Semester'];
+
+function readCell(row, ...names) {
+  for (const name of names) {
+    const value = row[name];
+    if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim();
+  }
+  return '';
+}
+
+// `YYYY-YYYY` with the second year immediately following the first.
+function isValidSchoolYear(value) {
+  const match = /^(\d{4})-(\d{4})$/.exec(value);
+  return !!match && Number(match[2]) === Number(match[1]) + 1;
+}
+
+function validateBlocks(row, blocks) {
+  const errors = [];
+  const seenTerms = new Set();
+
+  for (const block of blocks) {
+    const schoolYear = readCell(row, block.yearKey);
+    const semester = readCell(row, block.semesterKey);
+    const subjects = readCell(row, block.subjectsKey);
+    const amount = readCell(row, block.amountKey);
+    const status = readCell(row, block.statusKey);
+
+    if (!schoolYear && !semester && !subjects && !amount && !status) continue;
+
+    if (!isValidSchoolYear(schoolYear)) {
+      errors.push(`${block.prefix} School Year must be formatted YYYY-YYYY with consecutive years`);
+    }
+    if (!VALID_SEMESTERS.includes(semester)) {
+      errors.push(`${block.prefix} Semester must be "1st Semester" or "2nd Semester"`);
+    }
+
+    const termKey = `${schoolYear}::${semester}`;
+    if (seenTerms.has(termKey)) errors.push(`${schoolYear} ${semester} appears twice in this row`);
+    seenTerms.add(termKey);
+
+    const amountValue = Number(amount);
+    if (amount === '' || !Number.isFinite(amountValue) || amountValue < 0) {
+      errors.push(`${block.prefix} Amount Granted must be a number of 0 or more`);
+    }
+  }
+
+  return errors;
+}
+
 export function validateImportRows(rows, { existingEmails, existingScholarIds }) {
   const seenEmails = new Set();
   const seenScholarIds = new Set();
   const seenNameSchool = new Set();
+  const blocks = discoverSemesterBlocks(Object.keys(rows[0] || {}));
 
   return rows.map((row, index) => {
     const errors = [];
     const warnings = [];
-    const email = (row.Email || '').trim().toLowerCase();
-    const scholarId = (row['Scholar ID'] || '').trim();
-    const firstName = (row['First Name'] || '').trim();
-    const lastName = (row['Last Name'] || '').trim();
-    const nameSchoolKey = `${firstName.toLowerCase()} ${lastName.toLowerCase()}::${(row.School || '').trim().toLowerCase()}`;
+    const email = readCell(row, 'Email').toLowerCase();
+    const scholarId = readCell(row, 'Scholar ID');
+    const firstName = readCell(row, 'First Name');
+    const lastName = readCell(row, 'Last Name');
+    const nameSchoolKey = `${firstName.toLowerCase()} ${lastName.toLowerCase()}::${readCell(row, 'School').toLowerCase()}`;
 
     if (!firstName) errors.push('Missing First Name');
     if (!lastName) errors.push('Missing Last Name');
     if (!email) errors.push('Missing Email');
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('Invalid email format');
-    if (!row.School) errors.push('Missing School');
-    if (!row.Program) errors.push('Missing Program');
-    if (!row['Year Level']) errors.push('Missing Year Level');
-    if (Number(row['Active Scholarship Semesters']) < 1) errors.push('Active Scholarship Semesters must be at least 1');
-    if (Number(row['Total Scholarship Semesters']) < Number(row['Active Scholarship Semesters'])) {
-      errors.push('Total Scholarship Semesters must be >= Active Scholarship Semesters');
+    if (!readCell(row, 'School')) errors.push('Missing School');
+    if (!readCell(row, 'Program')) errors.push('Missing Program');
+    if (!readCell(row, 'Year Level')) errors.push('Missing Year Level');
+
+    const dateOfBirth = readCell(row, 'Date of Birth');
+    if (dateOfBirth && Number.isNaN(new Date(dateOfBirth).getTime())) {
+      errors.push('Date of Birth must be a valid date (YYYY-MM-DD)');
+    }
+
+    const semestersGranted = Number(readCell(row, 'Semesters Granted', 'Active Scholarship Semesters'));
+    const totalSemesters = Number(readCell(row, 'Total Scholarship Semesters'));
+    if (!Number.isFinite(semestersGranted) || semestersGranted < 1) {
+      errors.push('Semesters Granted must be at least 1');
+    }
+    if (totalSemesters < semestersGranted) {
+      errors.push('Total Scholarship Semesters must be >= Semesters Granted');
     }
 
     if (email && existingEmails.has(email)) errors.push('Email already has an account');
@@ -34,6 +96,24 @@ export function validateImportRows(rows, { existingEmails, existingScholarIds })
     seenScholarIds.add(scholarId);
     seenNameSchool.add(nameSchoolKey);
 
-    return { index, row, errors, warnings, valid: errors.length === 0 };
+    errors.push(...validateBlocks(row, blocks));
+
+    let history = null;
+    if (blocks.length > 0) {
+      const assembled = assembleScholarHistory(row, blocks);
+      errors.push(...assembled.errors);
+      if (assembled.enrolledSemesters.length > 0) {
+        history = assembled;
+        // Cross-check against the row's own declared count. validateBlocks already
+        // catches a filled block with a blank amount, so no per-term check belongs here.
+        if (Number.isFinite(semestersGranted) && assembled.derived.semestersUsed !== semestersGranted) {
+          errors.push(
+            `Semesters Granted (${semestersGranted}) does not match the ${assembled.derived.semestersUsed} disbursed semester block(s) filled in`
+          );
+        }
+      }
+    }
+
+    return { index, row, errors, warnings, valid: errors.length === 0, history };
   });
 }
