@@ -230,7 +230,17 @@ async function bulkCreateScholarsHandler(req, res) {
             semestersUsed: semestersGranted,
             grades,
             enrolledSemesters,
-            ...(history ? { countedTerms, importedDuringTerm, gradesEvaluation } : {}),
+            ...(history
+              ? {
+                  countedTerms,
+                  importedDuringTerm,
+                  gradesEvaluation,
+                  // Migrated scholars are already enrolled — their enrolment was
+                  // established before this system existed, so they shouldn't
+                  // land in the admin's "For Verification" queue on day one.
+                  enrollmentStatus: 'Verified',
+                }
+              : {}),
             scholarId: suppliedScholarId || scholarId, // existing auto-generated scholarId used only when not supplied
             uid: userRecord.uid,
             totalScholarshipSemesters,

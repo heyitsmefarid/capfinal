@@ -2223,8 +2223,14 @@ export function AppProvider({ children }) {
     if (!activeSy || !activeSem) return;
 
     const keyOf = (a) => a.firestoreId || a.scholarId || String(a.id);
+    const activeTermKey = `${activeSy.label}::${activeSem.name}`;
     const toFix = applicants.filter((a) => {
       if (a.enrollmentStatus !== 'Verified') return false;
+      // A scholar migrated during this term arrives already enrolled: their
+      // enrolment was established off-system, and the import deliberately
+      // records no grant for the term it ran in. From the NEXT term onward
+      // they are checked like everyone else.
+      if (a.importedDuringTerm === activeTermKey) return false;
       const enrolled = Array.isArray(a.enrolledSemesters) ? a.enrolledSemesters : [];
       return !enrolled.some((e) => e.schoolYear === activeSy.label && e.semester === activeSem.name);
     });
