@@ -36,7 +36,7 @@ import {
 } from 'lucide-react';
 import { matchesExact, matchesSearch } from '../utils/filtering';
 import { bulkCreateScholars, regenerateScholarPassword, setScholarAccountDisabled } from '../services/backendApi';
-import { validateImportRows } from '../utils/scholarImportValidation';
+import { validateImportRows, normalizeImportRow } from '../utils/scholarImportValidation';
 import { canEdit } from '../utils/auth';
 import { computeGwa, getPassedSubjectsCount, getPendingSubjectsCount, getFailedOrIncCount } from '../utils/academicRecords';
 import { fetchAuditLogsForDocument, logAudit } from '../services/auditLog';
@@ -871,7 +871,7 @@ export default function Scholars() {
       const buffer = await file.arrayBuffer();
       const wb = XLSX.read(buffer, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' }).map(normalizeImportRow);
 
       if (rows.length === 0) {
         Swal.fire({ icon: 'info', title: 'Empty file', text: 'No rows were found in the first sheet.' });

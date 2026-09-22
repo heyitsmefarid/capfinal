@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateImportRows } from './scholarImportValidation.js';
+import { validateImportRows, normalizeImportRow } from './scholarImportValidation.js';
 
 const baseRow = {
   'Scholar ID': '', 'First Name': 'Juan', 'Middle Name': '', 'Last Name': 'Dela Cruz',
@@ -180,4 +180,27 @@ test('flags a non-numeric Total Scholarship Semesters', () => {
   const row = { ...baseRow, 'Total Scholarship Semesters': 'eight' };
   const [result] = validateImportRows([row], noExisting);
   assert.ok(result.errors.includes('Total Scholarship Semesters must be a number'));
+});
+
+test('normalizeImportRow converts an Excel date serial back to YYYY-MM-DD', () => {
+  const row = normalizeImportRow({ ...baseRow, 'Date of Birth': 39153.333333333336 });
+  assert.equal(row['Date of Birth'], '2007-03-12');
+});
+
+test('normalizeImportRow leaves an already-correct date string alone', () => {
+  const row = normalizeImportRow({ ...baseRow, 'Date of Birth': '2007-03-12' });
+  assert.equal(row['Date of Birth'], '2007-03-12');
+});
+
+test('normalizeImportRow leaves a blank date alone', () => {
+  const row = normalizeImportRow({ ...baseRow, 'Date of Birth': '' });
+  assert.equal(row['Date of Birth'], '');
+});
+
+test('a row whose date arrived as an Excel serial validates once normalized', () => {
+  const [result] = validateImportRows(
+    [normalizeImportRow({ ...historyRow, 'Date of Birth': 39153.333333333336 })],
+    noExisting
+  );
+  assert.deepEqual(result.errors, []);
 });

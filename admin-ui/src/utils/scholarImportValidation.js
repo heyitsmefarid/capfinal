@@ -10,6 +10,21 @@ function readCell(row, ...names) {
   return '';
 }
 
+// Both Excel and SheetJS's CSV parser turn a typed date into a numeric serial
+// (days since 1899-12-30, plus a fractional timezone offset), so a perfectly
+// good `2007-03-12` arrives here as 39153.33. Round to the nearest whole day —
+// the fraction is a timezone artifact, not a time of day.
+const EXCEL_MAX_SERIAL = 2958465; // 9999-12-31
+
+export function normalizeImportRow(row) {
+  const value = row['Date of Birth'];
+  const serial = typeof value === 'number' ? value : NaN;
+  if (!Number.isFinite(serial) || serial < 1 || serial > EXCEL_MAX_SERIAL) return row;
+  const asDate = new Date(Math.round((Math.round(serial) - 25569) * 86400000));
+  if (Number.isNaN(asDate.getTime())) return row;
+  return { ...row, 'Date of Birth': asDate.toISOString().slice(0, 10) };
+}
+
 // `YYYY-YYYY` with the second year immediately following the first.
 function isValidSchoolYear(value) {
   const match = /^(\d{4})-(\d{4})$/.exec(value);
