@@ -1004,7 +1004,7 @@ export default function Scholars() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".xlsx,.xls"
+                  accept=".xlsx,.xls,.csv"
                   style={{ display: 'none' }}
                   onChange={handleFileChange}
                 />
