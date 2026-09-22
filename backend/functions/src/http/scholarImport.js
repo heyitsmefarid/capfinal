@@ -161,7 +161,12 @@ async function bulkCreateScholarsHandler(req, res) {
           const history = row.__history && typeof row.__history === 'object' ? row.__history : null;
           const grades = Array.isArray(history?.grades) ? history.grades : [];
           const enrolledSemesters = Array.isArray(history?.enrolledSemesters) ? history.enrolledSemesters : [];
-          const semestersGranted = history?.derived?.semestersUsed ?? activeScholarshipSemesters;
+          // The admin panel forces semestersUsed = countedTerms.length and adds the
+          // active term to any scholar missing it, so a migrated scholar imported
+          // without countedTerms gets reset to 1. Seed it from every history term,
+          // on-hold included — the counter is a program timeline, not a grant count.
+          const countedTerms = [...new Set(enrolledSemesters.map((e) => `${e.schoolYear}::${e.semester}`))];
+          const semestersGranted = history ? countedTerms.length : activeScholarshipSemesters;
 
           const grantSchoolYear =
             history?.derived?.grantSchoolYear ||
@@ -211,6 +216,7 @@ async function bulkCreateScholarsHandler(req, res) {
             semestersUsed: semestersGranted,
             grades,
             enrolledSemesters,
+            ...(history ? { countedTerms } : {}),
             scholarId: suppliedScholarId || scholarId, // existing auto-generated scholarId used only when not supplied
             uid: userRecord.uid,
             totalScholarshipSemesters,
