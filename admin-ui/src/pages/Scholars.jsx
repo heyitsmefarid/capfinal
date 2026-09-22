@@ -37,6 +37,7 @@ import {
 import { matchesExact, matchesSearch } from '../utils/filtering';
 import { bulkCreateScholars, regenerateScholarPassword, setScholarAccountDisabled } from '../services/backendApi';
 import { validateImportRows, normalizeImportRow } from '../utils/scholarImportValidation';
+import { buildTemplateHeader, buildTemplateSampleRow } from '../utils/scholarImportTemplate';
 import { canEdit } from '../utils/auth';
 import { computeGwa, getPassedSubjectsCount, getPendingSubjectsCount, getFailedOrIncCount } from '../utils/academicRecords';
 import { fetchAuditLogsForDocument, logAudit } from '../services/auditLog';
@@ -782,54 +783,12 @@ export default function Scholars() {
   const fileInputRef = useRef(null);
   const IMPORT_CHUNK_SIZE = 50;
 
-  // 7 semester blocks (SY1..SY7) cover the observed 1-7 semester range. The
-  // parser discovers blocks from the header, so an admin can hand-add SY8
-  // columns without a code change.
-  const TEMPLATE_SEMESTER_BLOCKS = 7;
-
   const handleDownloadTemplate = () => {
-    const sample = {
-      'Scholar ID': '',
-      'Last Name': 'Dela Cruz',
-      'First Name': 'Juan',
-      'Middle Name': 'Santos',
-      Suffix: '',
-      'Date of Birth': '2003-05-14',
-      Sex: 'Male',
-      Street: '12 Rizal Street',
-      Barangay: 'Barangay Lalud',
-      'Contact Number': '09171234567',
-      Email: 'juan.delacruz@example.com',
-      School: 'Divine Word College of Calapan',
-      Program: 'BS in Information Technology',
-      'Year Level': '2',
-      'Semesters Granted': '2',
-      'Total Scholarship Semesters': '8',
-      Status: 'Active',
-    };
+    const header = buildTemplateHeader();
+    const sample = buildTemplateSampleRow();
 
-    for (let n = 1; n <= TEMPLATE_SEMESTER_BLOCKS; n += 1) {
-      sample[`SY${n} School Year`] = '';
-      sample[`SY${n} Semester`] = '';
-      sample[`SY${n} Subjects`] = '';
-      sample[`SY${n} Amount Granted`] = '';
-      sample[`SY${n} Status`] = '';
-    }
-
-    // Two worked semesters so staff can see the packed subject format.
-    sample['SY1 School Year'] = '2023-2024';
-    sample['SY1 Semester'] = '1st Semester';
-    sample['SY1 Subjects'] = 'IT101|Programming 1|3|1.75|Passed; GEC102|Mathematics|3|2.00|Passed; PE101|PE 1|2|1.25|Passed';
-    sample['SY1 Amount Granted'] = '25000';
-    sample['SY1 Status'] = 'Disbursed';
-    sample['SY2 School Year'] = '2023-2024';
-    sample['SY2 Semester'] = '2nd Semester';
-    sample['SY2 Subjects'] = 'IT102|Programming 2|3|1.50|Passed; GEC105|Rizal|3|1.75|Passed';
-    sample['SY2 Amount Granted'] = '25000';
-    sample['SY2 Status'] = 'Disbursed';
-
-    const ws = XLSX.utils.json_to_sheet([sample]);
-    ws['!cols'] = Object.keys(sample).map((key) => ({
+    const ws = XLSX.utils.json_to_sheet([sample], { header });
+    ws['!cols'] = header.map((key) => ({
       wch: key.endsWith('Subjects') ? 60 : Math.max(14, key.length + 2),
     }));
     const wb = XLSX.utils.book_new();
