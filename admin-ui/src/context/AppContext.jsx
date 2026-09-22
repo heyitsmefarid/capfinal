@@ -369,8 +369,8 @@ const mapStudentToApplicant = (student) => {
     // authoritative history from one-time data-fix effects below.
     source: student.source ?? null,
     createdBy: student.createdBy ?? null,
-    // The term active when a migrated scholar was imported. Their sheet history
-    // is the complete count, so that term must never add a semester.
+    // The term active when a migrated scholar was imported. It's listed in
+    // countedTerms so it's never counted, but excluded from semestersUsed.
     importedDuringTerm: student.importedDuringTerm ?? null,
   };
 };
@@ -571,7 +571,19 @@ const hasCogSubmission = (applicant, term) => {
 // COG on file for that term. Built entirely from records the app already
 // tracks (getCorVerification, hasCogSubmission, hasFailingOrIncGrades) —
 // no new verification workflow is invented.
-const meetsReactivationConditions = (applicant, term) => {
+// An on-hold scholar must also show up to be restored: present at every event
+// of the term that has already ended, and at least one such event. A missing
+// record counts as absent — the auto-absence sweep skips on-hold scholars.
+const hasAttendedTerm = (applicant, term, events) => {
+  const ended = (events || []).filter(
+    (e) => e.schoolYear === term.schoolYear && e.semester === term.semester && hasEventEnded(e)
+  );
+  if (ended.length === 0) return false;
+  const attendance = applicant?.attendance || [];
+  return ended.every((e) => attendance.some((r) => r.activity === e.name && r.present));
+};
+
+const meetsReactivationConditions = (applicant, term, events) => {
   if (!term) return false;
   const termKey = `${term.schoolYear}::${term.semester}`;
   const termGrades = (applicant?.grades || []).filter(
@@ -581,7 +593,8 @@ const meetsReactivationConditions = (applicant, term) => {
     termGrades.length > 0 &&
     !hasFailingOrIncGrades(termGrades) &&
     getCorVerification(applicant, termKey) === 'verified' &&
-    hasCogSubmission(applicant, term)
+    hasCogSubmission(applicant, term) &&
+    hasAttendedTerm(applicant, term, events)
   );
 };
 
@@ -1817,7 +1830,12 @@ export function AppProvider({ children }) {
       const nextCountedTerms = baseCountedTerms.includes(termKey)
         ? baseCountedTerms
         : [...baseCountedTerms, termKey];
-      const newSemestersUsed = Math.min(semLimit, nextCountedTerms.length);
+      // A migrated scholar's importedDuringTerm sits in countedTerms only to
+      // block counting — it was never a used semester.
+      const newSemestersUsed = Math.min(
+        semLimit,
+        nextCountedTerms.filter((t) => !a.importedDuringTerm || t !== a.importedDuringTerm).length
+      );
       return {
         ...a,
         semestersUsed: newSemestersUsed,
@@ -2363,7 +2381,7 @@ export function AppProvider({ children }) {
     const activeTerm = getActiveTerm();
     const keyOf = (a) => a.firestoreId || a.scholarId || String(a.id);
     const toReactivate = applicants.filter(
-      (a) => a.status === 'on-hold' && meetsReactivationConditions(a, activeTerm)
+      (a) => a.status === 'on-hold' && meetsReactivationConditions(a, activeTerm, events)
     );
     if (toReactivate.length === 0) return;
 
@@ -2378,12 +2396,12 @@ export function AppProvider({ children }) {
           action: 'UPDATE',
           collection: 'users',
           documentId: active.firestoreId || active.scholarId || String(active.id),
-          details: `Auto-restored ${active.name || 'scholar'} to Active — grades passing, COR verified, COG submitted for ${activeTerm?.semester}, ${activeTerm?.schoolYear}`,
+          details: `Auto-restored ${active.name || 'scholar'} to Active — grades passing, COR verified, COG submitted, events attended for ${activeTerm?.semester}, ${activeTerm?.schoolYear}`,
         });
         return active;
       })
     );
-  }, [applicants, schoolYears]);
+  }, [applicants, schoolYears, events]);
 
   // Ticks periodically so the auto-absence sweep below re-evaluates against
   // the current time even if nothing else changes (e.g. an admin leaves the
@@ -2501,7 +2519,7 @@ export function AppProvider({ children }) {
     // "no failing grades," which would also (wrongly) match a scholar with no
     // recorded grades at all for the term.
     const toReactivate = allApplicants.filter(
-      (a) => a.status === 'on-hold' && meetsReactivationConditions(a, outgoingTerm)
+      (a) => a.status === 'on-hold' && meetsReactivationConditions(a, outgoingTerm, events)
     );
     const reactivateKeys = new Set(toReactivate.map(keyOf));
 
@@ -2552,7 +2570,7 @@ export function AppProvider({ children }) {
         action: 'UPDATE',
         collection: 'users',
         documentId: 'multiple',
-        details: `End-of-semester cleanup: restored ${toReactivate.length} on-hold scholar(s) to Active — grades cleared, COR verified, COG submitted for ${outgoingTerm?.semester}, ${outgoingTerm?.schoolYear}`,
+        details: `End-of-semester cleanup: restored ${toReactivate.length} on-hold scholar(s) to Active — grades cleared, COR verified, COG submitted, events attended for ${outgoingTerm?.semester}, ${outgoingTerm?.schoolYear}`,
       });
     }
 

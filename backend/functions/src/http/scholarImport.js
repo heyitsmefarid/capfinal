@@ -161,12 +161,18 @@ async function bulkCreateScholarsHandler(req, res) {
           const history = row.__history && typeof row.__history === 'object' ? row.__history : null;
           const grades = Array.isArray(history?.grades) ? history.grades : [];
           const enrolledSemesters = Array.isArray(history?.enrolledSemesters) ? history.enrolledSemesters : [];
-          // The admin panel forces semestersUsed = countedTerms.length, so a
-          // migrated scholar imported without countedTerms gets reset to 1. Seed it
-          // from every history term, on-hold included — the counter is a program
-          // timeline, not a grant count.
-          const countedTerms = [...new Set(enrolledSemesters.map((e) => `${e.schoolYear}::${e.semester}`))];
-          const semestersGranted = history ? countedTerms.length : activeScholarshipSemesters;
+          // A migrated scholar's count is exactly their granted (disbursed) terms —
+          // on-hold terms don't use a semester. The admin panel counts any active
+          // term missing from countedTerms, so the term active at import is listed
+          // too (as importedDuringTerm, which the panel excludes from the count)
+          // unless it's already a granted history term. Listing it also stops
+          // older deployed copies of the panel from adding it.
+          const grantedTerms = [...new Set(
+            enrolledSemesters.filter((e) => e.status === 'disbursed').map((e) => `${e.schoolYear}::${e.semester}`)
+          )];
+          const importedDuringTerm = grantedTerms.includes(currentTerm.termKey) ? null : currentTerm.termKey;
+          const countedTerms = importedDuringTerm ? [...grantedTerms, importedDuringTerm] : grantedTerms;
+          const semestersGranted = history ? grantedTerms.length : activeScholarshipSemesters;
 
           const grantSchoolYear =
             history?.derived?.grantSchoolYear ||
@@ -216,9 +222,7 @@ async function bulkCreateScholarsHandler(req, res) {
             semestersUsed: semestersGranted,
             grades,
             enrolledSemesters,
-            // importedDuringTerm tells the panel not to count the term that was
-            // active at import: the sheet's history is the complete count.
-            ...(history ? { countedTerms, importedDuringTerm: currentTerm.termKey } : {}),
+            ...(history ? { countedTerms, importedDuringTerm } : {}),
             scholarId: suppliedScholarId || scholarId, // existing auto-generated scholarId used only when not supplied
             uid: userRecord.uid,
             totalScholarshipSemesters,
