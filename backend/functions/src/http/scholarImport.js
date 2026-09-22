@@ -161,18 +161,20 @@ async function bulkCreateScholarsHandler(req, res) {
           const history = row.__history && typeof row.__history === 'object' ? row.__history : null;
           const grades = Array.isArray(history?.grades) ? history.grades : [];
           const enrolledSemesters = Array.isArray(history?.enrolledSemesters) ? history.enrolledSemesters : [];
-          // A migrated scholar's count is exactly their granted (disbursed) terms —
-          // on-hold terms don't use a semester. The admin panel counts any active
-          // term missing from countedTerms, so the term active at import is listed
-          // too (as importedDuringTerm, which the panel excludes from the count)
-          // unless it's already a granted history term. Listing it also stops
+          // Semesters Used counts every term the scholar was in the programme,
+          // on-hold included — it's a programme timeline, not a count of
+          // payments (the sheet's Semesters Granted is the money figure, and a
+          // held term is ₱0 there). The admin panel counts any active term
+          // missing from countedTerms, so the term active at import is listed
+          // too (as importedDuringTerm, which the panel excludes from the
+          // count) unless the history already covers it. Listing it also stops
           // older deployed copies of the panel from adding it.
-          const grantedTerms = [...new Set(
-            enrolledSemesters.filter((e) => e.status === 'disbursed').map((e) => `${e.schoolYear}::${e.semester}`)
+          const historyTerms = [...new Set(
+            enrolledSemesters.map((e) => `${e.schoolYear}::${e.semester}`)
           )];
-          const importedDuringTerm = grantedTerms.includes(currentTerm.termKey) ? null : currentTerm.termKey;
-          const countedTerms = importedDuringTerm ? [...grantedTerms, importedDuringTerm] : grantedTerms;
-          const semestersGranted = history ? grantedTerms.length : activeScholarshipSemesters;
+          const importedDuringTerm = historyTerms.includes(currentTerm.termKey) ? null : currentTerm.termKey;
+          const countedTerms = importedDuringTerm ? [...historyTerms, importedDuringTerm] : historyTerms;
+          const semestersGranted = history ? historyTerms.length : activeScholarshipSemesters;
 
           // Migrated grades are copied from the office's existing records, so
           // they arrive already confirmed — same shape the admin's "Confirm
