@@ -1,0 +1,897 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:iskonnectttt/core/models/student_model.dart';
+import 'package:iskonnectttt/core/constants/firebase_env.dart';
+import 'package:iskonnectttt/core/providers/session_reset.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+// Shared preferences keys
+const String _kLoggedInStudentId = 'logged_in_student_id';
+const String _kRegisteredStudents = 'registered_students';
+const String _kStudentsCollection = 'users';
+
+// Auth State
+class AuthState {
+  final bool isLoggedIn;
+  final bool isLoading;
+  final bool isInitialized;
+  final StudentModel? student;
+  final String? error;
+
+  const AuthState({
+    this.isLoggedIn = false,
+    this.isLoading = false,
+    this.isInitialized = false,
+    this.student,
+    this.error,
+  });
+
+  AuthState copyWith({
+    bool? isLoggedIn,
+    bool? isLoading,
+    bool? isInitialized,
+    StudentModel? student,
+    String? error,
+  }) {
+    return AuthState(
+      isLoggedIn: isLoggedIn ?? this.isLoggedIn,
+      isLoading: isLoading ?? this.isLoading,
+      isInitialized: isInitialized ?? this.isInitialized,
+      student: student ?? this.student,
+      error: error,
+    );
+  }
+}
+
+// Auth Notifier
+class AuthNotifier extends StateNotifier<AuthState> {
+  static final Map<String, StudentModel> _registeredStudents = {};
+  static StudentModel? _pendingRegistration;
+  static const Duration _firestoreTimeout = Duration(seconds: 4);
+
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _studentSub;
+
+  // Needed to invalidate the other per-scholar providers (grades, attendance,
+  // messages, ...) on login/logout — see resetPerStudentProviders.
+  final Ref _ref;
+
+  AuthNotifier(this._ref) : super(const AuthState()) {
+    _initializeAuth();
+  }
+
+  /// Live-listen to the logged-in student's Firestore document so changes made
+  /// by the admin (approval, status, scholar id, scores) appear in real time.
+  void _listenToStudentDoc(String studentId) {
+    final collection = _studentsCollection;
+    if (collection == null) return;
+    _studentSub?.cancel();
+    _studentSub = collection.doc(studentId).snapshots().listen(
+      (snapshot) {
+        final data = snapshot.data();
+        // Account removed/archived by the admin while signed in, or the doc was
+        // hard-deleted — end the session immediately.
+        if (!snapshot.exists || _isRemovedData(data)) {
+          if (state.student?.id == studentId) {
+            _registeredStudents.remove(studentId);
+            _saveStudentsToStorage();
+            _saveLoggedInUser(null);
+            _studentSub?.cancel();
+            _studentSub = null;
+            // Fresh state (copyWith can't null out `student`) → back to login.
+            state = const AuthState(isInitialized: true);
+          }
+          return;
+        }
+        if (data == null) return;
+        try {
+          final updated = _normalizeStudentStatus(StudentModel.fromJson(data));
+          _registeredStudents[updated.id] = updated;
+          _saveStudentsToStorage();
+          if (state.student?.id == updated.id) {
+            state = state.copyWith(student: updated);
+          }
+        } catch (_) {
+          // Ignore malformed snapshots.
+        }
+      },
+      onError: (_) {},
+    );
+  }
+
+  @override
+  void dispose() {
+    _studentSub?.cancel();
+    super.dispose();
+  }
+
+  // The admin panel "deletes" accounts with a soft-delete: the Firestore doc
+  // stays but is flagged. Such accounts must not log in or auto-resume.
+  static bool _isRemovedData(Map<String, dynamic>? data) {
+    if (data == null) return true;
+    return data['adminStatus'] == 'removed' ||
+        data['archived'] == true ||
+        data['applicationStatus']?.toString().toLowerCase() == 'removed';
+  }
+
+  bool get _isFirestoreReady => FirebaseEnv.isConfigured && Firebase.apps.isNotEmpty;
+
+  /// Ensures anonymous sign-in is complete before any Firestore query runs.
+  /// Without this, Firestore returns permission-denied and the catch returns null.
+  Future<void> _ensureAnonymousAuth() async {
+    if (!_isFirestoreReady) return;
+    try {
+      final auth = FirebaseAuth.instance;
+      if (auth.currentUser == null) {
+        await auth.signInAnonymously();
+      }
+    } catch (_) {}
+  }
+
+  CollectionReference<Map<String, dynamic>>? get _studentsCollection {
+    if (!_isFirestoreReady) {
+      return null;
+    }
+    return FirebaseFirestore.instance.collection(_kStudentsCollection);
+  }
+
+  Future<void> _saveStudentToFirestore(StudentModel student) async {
+    await _ensureAnonymousAuth();
+    final collection = _studentsCollection;
+    if (collection == null) return;
+
+    await collection
+        .doc(student.id)
+        .set(student.toJson(), SetOptions(merge: true))
+        .timeout(const Duration(seconds: 10));
+  }
+
+  Future<void> _saveStudentToFirestoreSafely(StudentModel student) async {
+    try {
+      await _saveStudentToFirestore(student);
+    } catch (_) {
+      // Keep local auth flow working even if Firestore is slow/unavailable.
+    }
+  }
+
+  /// Writes ONLY the given fields, unlike [_saveStudentToFirestore] which
+  /// merge-writes the entire model. Matters for a real (non-anonymous)
+  /// session: firestore.rules' `/users` update rule allows such a session to
+  /// touch only a narrow field allowlist — it checks the *diff* between what's
+  /// sent and what's already stored, so if any other field on the local
+  /// model (e.g. an admin-managed one like `scholarId`/`examScore`) happens to
+  /// be stale relative to Firestore, a full-model write's diff would include
+  /// that field too and the ENTIRE write is denied, silently, by
+  /// `_saveStudentToFirestoreSafely`'s catch. Scoping to just the changed
+  /// field(s) keeps the diff to only what's actually allowed to change.
+  Future<void> _saveStudentFieldsToFirestore(
+    String studentId,
+    Map<String, dynamic> fields,
+  ) async {
+    await _ensureAnonymousAuth();
+    final collection = _studentsCollection;
+    if (collection == null) return;
+
+    await collection
+        .doc(studentId)
+        .set(fields, SetOptions(merge: true))
+        .timeout(const Duration(seconds: 10));
+  }
+
+  Future<void> _saveStudentFieldsToFirestoreSafely(
+    String studentId,
+    Map<String, dynamic> fields,
+  ) async {
+    try {
+      await _saveStudentFieldsToFirestore(studentId, fields);
+    } catch (_) {
+      // Keep local auth flow working even if Firestore is slow/unavailable.
+    }
+  }
+
+  static StudentModel _normalizeStudentStatus(StudentModel student) {
+    if (student.studentType == StudentType.applicant &&
+        student.scholarshipStatus.toLowerCase() == 'active') {
+      return student.copyWith(scholarshipStatus: 'Pending');
+    }
+    return student;
+  }
+
+  // Initialize auth state from shared preferences
+  Future<void> _initializeAuth() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // Load registered students from storage
+      final storedStudentsJson = prefs.getString(_kRegisteredStudents);
+      if (storedStudentsJson != null) {
+        final Map<String, dynamic> storedStudents = jsonDecode(
+          storedStudentsJson,
+        );
+        storedStudents.forEach((key, value) {
+          if (!_registeredStudents.containsKey(key)) {
+            try {
+              _registeredStudents[key] = _normalizeStudentStatus(
+                StudentModel.fromJson(Map<String, dynamic>.from(value as Map)),
+              );
+            } catch (_) {
+              // Skip malformed entries so one bad doc can't block all accounts.
+            }
+          }
+        });
+      }
+
+      // Check if there's a logged in user. Firestore is authoritative: an
+      // account the admin removed/archived must NOT auto-resume, even though a
+      // stale copy may still sit in the local cache. We only fall back to the
+      // cache when the server is unreachable (offline support).
+      final loggedInId = prefs.getString(_kLoggedInStudentId);
+      if (loggedInId != null) {
+        final collection = _studentsCollection;
+        Map<String, dynamic>? remoteData;
+        var reachedServer = false;
+        if (collection != null) {
+          await _ensureAnonymousAuth();
+          try {
+            final snap = await collection.doc(loggedInId).get().timeout(_firestoreTimeout);
+            reachedServer = true;
+            remoteData = snap.exists ? snap.data() : null;
+          } catch (_) {
+            reachedServer = false;
+          }
+        }
+
+        if (reachedServer) {
+          if (remoteData == null || _isRemovedData(remoteData)) {
+            // Account was deleted/archived — clear the stale session so the
+            // app returns to the login screen instead of opening it.
+            _registeredStudents.remove(loggedInId);
+            await _saveStudentsToStorage();
+            await _saveLoggedInUser(null);
+            // Fresh state (copyWith can't null out `student`) → back to login.
+            state = const AuthState(isInitialized: true);
+            return;
+          }
+          final student = _normalizeStudentStatus(StudentModel.fromJson(remoteData));
+          _registeredStudents[loggedInId] = student;
+          state = state.copyWith(isLoggedIn: true, isInitialized: true, student: student);
+          _listenToStudentDoc(loggedInId);
+          return;
+        }
+
+        // Server unreachable — fall back to a cached copy if we have one.
+        final cached = _registeredStudents[loggedInId];
+        if (cached != null) {
+          state = state.copyWith(isLoggedIn: true, isInitialized: true, student: cached);
+          _listenToStudentDoc(loggedInId);
+          return;
+        }
+      }
+
+      state = state.copyWith(isInitialized: true);
+    } catch (e) {
+      state = state.copyWith(isInitialized: true);
+    }
+  }
+
+  // Save registered students to storage
+  Future<void> _saveStudentsToStorage() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final studentsMap = _registeredStudents.map(
+        (key, value) => MapEntry(key, value.toJson()),
+      );
+      await prefs.setString(_kRegisteredStudents, jsonEncode(studentsMap));
+    } catch (e) {
+      // Ignore storage errors
+    }
+  }
+
+  // Save logged in user ID
+  Future<void> _saveLoggedInUser(String? userId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (userId != null) {
+        await prefs.setString(_kLoggedInStudentId, userId);
+      } else {
+        await prefs.remove(_kLoggedInStudentId);
+      }
+    } catch (e) {
+      // Ignore storage errors
+    }
+  }
+
+  // Register a new student
+  Future<bool> register(StudentModel student) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    try {
+      final normalizedEmail = student.email.trim().toLowerCase();
+      final normalizedStudent = student.copyWith(email: normalizedEmail);
+
+      // Validate required fields
+      if (normalizedStudent.firstName.isEmpty || normalizedStudent.lastName.isEmpty) {
+        state = state.copyWith(
+          isLoading: false,
+          error: 'First name and last name are required.',
+        );
+        return false;
+      }
+
+      if (normalizedEmail.isEmpty) {
+        state = state.copyWith(
+          isLoading: false,
+          error: 'Email address is required.',
+        );
+        return false;
+      }
+
+      // Validate email format
+      final emailRegex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
+      if (!emailRegex.hasMatch(normalizedEmail)) {
+        state = state.copyWith(
+          isLoading: false,
+          error: 'Please enter a valid email address.',
+        );
+        return false;
+      }
+
+      if (normalizedStudent.password.length < 6) {
+        state = state.copyWith(
+          isLoading: false,
+          error: 'Password must be at least 6 characters long.',
+        );
+        return false;
+      }
+
+      // Simulate network delay
+      await Future.delayed(const Duration(milliseconds: 1500));
+
+      // Create the real Firebase Auth account for this applicant — replaces
+      // the old plaintext-password-in-Firestore flow. Firebase Auth is now
+      // the source of truth for credentials (and the authoritative
+      // duplicate-email check: it throws 'email-already-in-use' below).
+      final credential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(
+            email: normalizedEmail,
+            password: normalizedStudent.password,
+          );
+      final uid = credential.user?.uid;
+      if (uid == null) {
+        // Should not happen after a successful account creation, but guard
+        // anyway rather than proceeding with no uid to key the doc on.
+        state = state.copyWith(
+          isLoading: false,
+          error: 'An unexpected error occurred. Please try again later.',
+        );
+        return false;
+      }
+
+      // Doc id == Auth uid for every account created from now on (mirrors
+      // the lookup contract `login()` relies on). The applicant chose this
+      // password themselves, so no forced change is needed on next login —
+      // and the plaintext password is dropped rather than persisted.
+      final storedStudent = _normalizeStudentStatus(
+        normalizedStudent.copyWith(
+          id: uid,
+          uid: uid,
+          mustChangePassword: false,
+          password: '',
+        ),
+      );
+      // Persist the profile doc BEFORE treating registration as successful.
+      // Unlike every other write in this file, this one must not silently
+      // swallow failures via `_saveStudentToFirestoreSafely`: a live
+      // Firebase Auth account with no backing Firestore doc would make
+      // `login()` report "Account not found" and sign the user back out,
+      // while re-registering the same email would then fail forever with
+      // 'email-already-in-use'. So this uses the throwing
+      // `_saveStudentToFirestore` directly and rolls back the just-created
+      // Auth account on failure, mirroring the "no dangling half-registered
+      // session" discipline `login()` already applies to its own failure
+      // paths.
+      try {
+        if (_studentsCollection == null) {
+          throw StateError('Firestore is not configured.');
+        }
+        await _saveStudentToFirestore(storedStudent);
+      } catch (_) {
+        // Best-effort rollback so the email isn't permanently orphaned and
+        // the applicant can safely retry registration with the same
+        // address.
+        try {
+          await credential.user?.delete();
+        } catch (_) {
+          // Deletion can fail too (e.g. offline) — fall through and at
+          // least sign out below so this device isn't left in a
+          // half-registered, signed-in state with no backing profile.
+        }
+        if (FirebaseAuth.instance.currentUser != null) {
+          try {
+            await FirebaseAuth.instance.signOut();
+          } catch (_) {
+            // Best-effort — don't let a signOut failure mask the real error.
+          }
+        }
+        state = state.copyWith(
+          isLoading: false,
+          error:
+              'Registration could not be completed. Please check your connection and try again.',
+        );
+        return false;
+      }
+
+      _registeredStudents[storedStudent.id] = storedStudent;
+      _pendingRegistration = storedStudent;
+
+      // Save to persistent storage
+      await _saveStudentsToStorage();
+
+      state = state.copyWith(isLoading: false);
+      return true;
+    } on FirebaseAuthException catch (e) {
+      String message;
+      switch (e.code) {
+        case 'email-already-in-use':
+          message =
+              'This email address is already registered. Please use a different email or try logging in.';
+          break;
+        case 'weak-password':
+          message = 'Password is too weak. Please choose a stronger password.';
+          break;
+        case 'invalid-email':
+          message = 'Please enter a valid email address.';
+          break;
+        default:
+          message =
+              'Registration failed. Please check your information and try again.';
+      }
+      state = state.copyWith(isLoading: false, error: message);
+      return false;
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error:
+            'Registration failed. Please check your information and try again.',
+      );
+      return false;
+    }
+  }
+
+  // Get pending registration (for success screen)
+  StudentModel? getPendingRegistration() {
+    return _pendingRegistration;
+  }
+
+  // Clear pending registration
+  void clearPendingRegistration() {
+    _pendingRegistration = null;
+  }
+
+  // Login
+  Future<bool> login(String email, String password) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    // Validate inputs
+    if (email.isEmpty) {
+      state = state.copyWith(
+        isLoading: false,
+        error: 'Please enter your email address.',
+      );
+      return false;
+    }
+
+    if (password.isEmpty) {
+      state = state.copyWith(
+        isLoading: false,
+        error: 'Please enter your password.',
+      );
+      return false;
+    }
+
+    // Simulate network delay
+    await Future.delayed(const Duration(milliseconds: 1000));
+
+    try {
+      // Real Firebase Auth sign-in — replaces the old anonymous-auth +
+      // Firestore-email-query + plaintext-password-compare flow. Firebase
+      // Auth itself is now the source of truth for credential checking.
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: email.toLowerCase(),
+        password: password,
+      );
+
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) {
+        // Should not happen after a successful sign-in, but guard anyway
+        // rather than proceeding with no way to look up the scholar doc.
+        state = state.copyWith(
+          isLoading: false,
+          error: 'An unexpected error occurred. Please try again later.',
+        );
+        return false;
+      }
+
+      // Look up the scholar's Firestore doc by uid. Per this plan's global
+      // constraint ("doc id and Firebase Auth uid are equal for every
+      // account created from now on, but legacy scholars keep their
+      // existing doc id — always compare identity via the uid field, never
+      // doc.id"), a direct doc(uid) lookup alone only covers accounts
+      // created from now on (bulkCreateScholars sets doc.id == uid). Legacy
+      // scholars migrated by migrateLegacyPasswordsToAuth.js keep their
+      // ORIGINAL doc id and only gain a `uid` field, so fall back to a
+      // `uid`-field query when the direct lookup misses — this is required
+      // for existing scholars to be able to log in at all.
+      DocumentSnapshot<Map<String, dynamic>>? doc = await _studentsCollection
+          ?.doc(uid)
+          .get()
+          .timeout(_firestoreTimeout);
+      if (doc == null || !doc.exists || doc.data()?['uid'] != uid) {
+        final query = await _studentsCollection
+            ?.where('uid', isEqualTo: uid)
+            .limit(1)
+            .get()
+            .timeout(_firestoreTimeout);
+        doc = (query != null && query.docs.isNotEmpty) ? query.docs.first : null;
+      }
+
+      final data = doc?.data();
+      if (doc == null || !doc.exists || data == null) {
+        await FirebaseAuth.instance.signOut();
+        state = state.copyWith(isLoading: false, error: 'Account not found.');
+        return false;
+      }
+
+      if (_isRemovedData(data)) {
+        await FirebaseAuth.instance.signOut();
+        state = state.copyWith(
+          isLoading: false,
+          error: 'This account is no longer active.',
+        );
+        return false;
+      }
+
+      // Anchor to the ACTUAL Firestore document id, not the `id` field
+      // inside the JSON payload — StudentModel.fromJson fabricates a random
+      // UUID when `id` is missing/malformed. For the legacy fallback path
+      // above (found via the `uid`-field query, where doc.id is the
+      // scholar's original pre-migration id, not their uid) trusting a
+      // wrong/missing `id` field would key _listenToStudentDoc and
+      // _registeredStudents to a document that doesn't exist, bouncing the
+      // scholar back to the login screen immediately after a successful
+      // sign-in.
+      final student = _normalizeStudentStatus(
+        StudentModel.fromJson(data).copyWith(id: doc.id),
+      );
+      _registeredStudents[student.id] = student;
+      await _saveStudentsToStorage();
+
+      // Save login state to persistent storage
+      await _saveLoggedInUser(student.id);
+      _listenToStudentDoc(student.id);
+
+      // Discard any grades/attendance/messages/timeline left over from a
+      // PREVIOUS scholar's session on this device — see resetPerStudentProviders.
+      // Must run after _saveLoggedInUser above, since the providers it
+      // invalidates resolve "who is this?" by reading the same SharedPreferences
+      // key that call just wrote.
+      resetPerStudentProviders(_ref);
+
+      state = state.copyWith(
+        isLoggedIn: true,
+        isLoading: false,
+        student: student,
+        error: null,
+      );
+
+      return true;
+    } on FirebaseAuthException catch (e) {
+      String message;
+      switch (e.code) {
+        case 'wrong-password':
+        case 'invalid-credential':
+          message = 'Incorrect email or password.';
+          break;
+        case 'user-not-found':
+          message = 'No account found with that email.';
+          break;
+        case 'user-disabled':
+          message = 'This account has been disabled.';
+          break;
+        case 'too-many-requests':
+          message = 'Too many attempts. Try again later.';
+          break;
+        default:
+          message = 'Unable to sign in. Please try again.';
+      }
+      state = state.copyWith(isLoading: false, error: message);
+      return false;
+    } catch (e) {
+      // Any failure AFTER a successful signInWithEmailAndPassword (a
+      // Firestore read/timeout, a malformed doc failing to parse, etc.)
+      // must not leave a half-authenticated Auth session dangling while the
+      // app reports isLoggedIn: false — sign it back out before surfacing
+      // the error, same as the "account not found"/"removed" branches above.
+      if (FirebaseAuth.instance.currentUser != null) {
+        try {
+          await FirebaseAuth.instance.signOut();
+        } catch (_) {
+          // Best-effort — don't let a signOut failure mask the real error.
+        }
+      }
+      state = state.copyWith(
+        isLoading: false,
+        error: 'An unexpected error occurred. Please try again later.',
+      );
+      return false;
+    }
+  }
+
+  /// Resets the password for the account with [email] after the emailed OTP has
+  /// been verified (forgot-password flow). Updates the Firestore `password`
+  /// field the login check reads. Returns false if no account matches.
+  /// Asks Firebase Auth to email [email] a password-reset link.
+  ///
+  /// Returns null on success, or a message to show the user on failure.
+  ///
+  /// Replaces an earlier flow that emailed a 6-digit code via Cloud Functions
+  /// and then wrote the new password onto the Firestore document. That was
+  /// broken two ways: the endpoints were never deployed, and a plaintext
+  /// `password` field is ignored entirely by real Firebase Auth sign-in (this
+  /// app moved to Auth-backed credentials). Setting another user's password
+  /// requires either a reset token or the Admin SDK, so a client-only OTP
+  /// variant is not possible — Firebase's own reset email is.
+  ///
+  /// `user-not-found` is deliberately reported as success: surfacing it would
+  /// let anyone enumerate which email addresses have accounts. (Firebase's
+  /// email-enumeration protection may already mask that code; handling it here
+  /// keeps the behaviour correct whether or not that setting is on.)
+  Future<String?> sendPasswordResetEmail(String email) async {
+    try {
+      await FirebaseAuth.instance
+          .sendPasswordResetEmail(email: email.trim().toLowerCase());
+      return null;
+    } on FirebaseAuthException catch (e) {
+      switch (e.code) {
+        case 'user-not-found':
+          return null;
+        case 'invalid-email':
+          return 'That email address is not valid.';
+        case 'too-many-requests':
+          return 'Too many attempts. Please wait a few minutes before trying again.';
+        case 'network-request-failed':
+          return 'Could not reach the authentication service. Check your connection.';
+        default:
+          return e.message ?? 'Could not send the reset email. Please try again.';
+      }
+    } catch (_) {
+      return 'Could not send the reset email. Please try again.';
+    }
+  }
+
+  // Login with registration (auto-login after registration)
+  Future<bool> loginWithStudent(StudentModel student) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    state = state.copyWith(
+      isLoggedIn: true,
+      isLoading: false,
+      student: student,
+    );
+
+    // Save login state to persistent storage
+    await _saveLoggedInUser(student.id);
+    await _saveStudentToFirestoreSafely(student);
+    _listenToStudentDoc(student.id);
+
+    // A freshly registered scholar is a NEW uid, but on a device that was
+    // previously used to register/preview a different one, the same stale-
+    // provider risk applies — see resetPerStudentProviders.
+    resetPerStudentProviders(_ref);
+
+    return true;
+  }
+
+  // Logout
+  Future<void> logout() async {
+    state = state.copyWith(isLoading: true);
+
+    // Sign out of Firebase Auth too — this previously only cleared the app's
+    // own AuthState/SharedPreferences flag, leaving FirebaseAuth.currentUser
+    // pointed at the outgoing scholar until the next signInWithEmailAndPassword
+    // silently replaced it. Harmless for the login screen itself, but any code
+    // that reads FirebaseAuth.instance.currentUser between logout and the next
+    // login would still see the previous scholar.
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (_) {
+      // Best-effort — a failed signOut must not block clearing local state.
+    }
+
+    // Clear login state from persistent storage
+    await _saveLoggedInUser(null);
+    await _studentSub?.cancel();
+    _studentSub = null;
+
+    // Drop the outgoing scholar's cached grades/attendance/messages/etc. now,
+    // rather than waiting for the next login — see resetPerStudentProviders.
+    // With no current student id, each invalidated provider's constructor
+    // finds nothing to load and settles into its empty default state.
+    resetPerStudentProviders(_ref);
+
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    state = AuthState(isInitialized: true);
+  }
+
+  // Update profile
+  // Updates editable profile fields. Every argument is optional so existing
+  // callers (contact/email only) keep working, while the Edit Profile screen can
+  // now let a scholar fill in any field — important for bulk-imported accounts
+  // that start with only name/school/program populated.
+  void updateProfile({
+    String? firstName,
+    String? middleName,
+    String? lastName,
+    String? suffix,
+    String? contactNumber,
+    String? email,
+    String? gender,
+    DateTime? dateOfBirth,
+    String? houseNo,
+    String? street,
+    String? barangay,
+    String? city,
+    String? province,
+    String? schoolName,
+    String? academicProgram,
+    String? yearLevel,
+    String? academicYear,
+    String? emergencyContactName,
+    String? emergencyContactPhone,
+  }) {
+    if (state.student == null) return;
+
+    final normalizedEmail = email?.trim().toLowerCase();
+
+    state = state.copyWith(
+      student: state.student!.copyWith(
+        firstName: firstName,
+        middleName: middleName,
+        lastName: lastName,
+        suffix: suffix,
+        contactNumber: contactNumber,
+        email: normalizedEmail,
+        gender: gender,
+        dateOfBirth: dateOfBirth,
+        houseNo: houseNo,
+        street: street,
+        barangay: barangay,
+        city: city,
+        province: province,
+        schoolName: schoolName,
+        academicProgram: academicProgram,
+        yearLevel: yearLevel,
+        academicYear: academicYear,
+        emergencyContactName: emergencyContactName,
+        emergencyContactPhone: emergencyContactPhone,
+      ),
+    );
+
+    // Update in storage
+    _registeredStudents[state.student!.id] = state.student!;
+    _saveStudentsToStorage();
+    _saveStudentToFirestoreSafely(state.student!);
+  }
+
+  // Update profile picture
+  Future<void> updateProfilePicture(String? base64Image) async {
+    if (state.student == null) return;
+
+    state = state.copyWith(
+      student: state.student!.copyWith(profilePicture: base64Image),
+    );
+
+    // Update in storage
+    _registeredStudents[state.student!.id] = state.student!;
+    await _saveStudentsToStorage();
+    await _saveStudentToFirestoreSafely(state.student!);
+  }
+
+  // Update scholarship status
+  void updateScholarshipStatus(String status) {
+    if (state.student == null) return;
+
+    state = state.copyWith(
+      student: state.student!.copyWith(scholarshipStatus: status),
+    );
+
+    _registeredStudents[state.student!.id] = state.student!;
+    _saveStudentToFirestoreSafely(state.student!);
+  }
+
+  // Update applicant application status
+  Future<void> updateApplicationStatus(String status) async {
+    if (state.student == null) return;
+
+    final updatedStudent = state.student!.copyWith(applicationStatus: status);
+    state = state.copyWith(student: updatedStudent);
+    _registeredStudents[updatedStudent.id] = updatedStudent;
+    await _saveStudentsToStorage();
+    await _saveStudentToFirestoreSafely(updatedStudent);
+  }
+
+  /// Marks the one-time approval celebration as seen for the current
+  /// student, persisting to Firestore so it never replays on another device
+  /// or after a reinstall.
+  Future<void> markCelebrationSeen() async {
+    if (state.student == null) return;
+
+    final updated = state.student!.copyWith(celebrationSeen: true);
+    state = state.copyWith(student: updated);
+    _registeredStudents[updated.id] = updated;
+    await _saveStudentsToStorage();
+    await _saveStudentFieldsToFirestoreSafely(updated.id, {'celebrationSeen': true});
+  }
+
+  /// Marks the one-time rejection notice as seen for the current student —
+  /// same persistence pattern as [markCelebrationSeen], for the other outcome.
+  Future<void> markRejectionSeen() async {
+    if (state.student == null) return;
+
+    final updated = state.student!.copyWith(rejectionSeen: true);
+    state = state.copyWith(student: updated);
+    _registeredStudents[updated.id] = updated;
+    await _saveStudentsToStorage();
+    await _saveStudentFieldsToFirestoreSafely(updated.id, {'rejectionSeen': true});
+  }
+
+  /// Persist submitted scholarship requirements to Firestore so the admin
+  /// panel can see which documents the applicant has submitted.
+  Future<void> saveApplicationRequirements(
+    Map<String, dynamic> requirements,
+  ) async {
+    if (state.student == null) return;
+    await _ensureAnonymousAuth();
+    final collection = _studentsCollection;
+    if (collection == null) return;
+    try {
+      await collection
+          .doc(state.student!.id)
+          .set({'requirements': requirements}, SetOptions(merge: true))
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {}
+  }
+
+}
+
+// Provider
+final authStateProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
+  return AuthNotifier(ref);
+});
+
+// Convenience providers
+final currentStudentProvider = Provider<StudentModel?>((ref) {
+  return ref.watch(authStateProvider).student;
+});
+
+final isLoggedInProvider = Provider<bool>((ref) {
+  return ref.watch(authStateProvider).isLoggedIn;
+});
+
+/// Provider to check if current user is a scholar
+final isScholarProvider = Provider<bool>((ref) {
+  final student = ref.watch(currentStudentProvider);
+  return student?.isScholar ?? false;
+});
+
+/// Provider to check if current user is an applicant
+final isApplicantProvider = Provider<bool>((ref) {
+  final student = ref.watch(currentStudentProvider);
+  return student?.isApplicant ?? true;
+});

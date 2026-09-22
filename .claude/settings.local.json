@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter analyze *)",
+      "Bash(nohup flutter run -d chrome --web-port=5001)",
+      "Bash(disown)",
+      "Bash(echo \"launched, pid $!\")"
+    ]
+  }
+}

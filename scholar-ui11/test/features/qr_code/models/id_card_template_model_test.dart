@@ -1,0 +1,51 @@
+// scholar-ui11/test/features/qr_code/models/id_card_template_model_test.dart
+import 'package:flutter_test/flutter_test.dart';
+import 'package:iskonnectttt/features/qr_code/models/id_card_template_model.dart';
+
+void main() {
+  test('fromJson parses all fields when present', () {
+    final model = IdCardTemplateModel.fromJson({
+      'frontBackgroundUrl': 'https://example.com/front.png',
+      'frontAspectRatio': 1.6,
+      'backBackgroundUrl': 'https://example.com/back.png',
+      'backAspectRatio': 1.6,
+      'mayorSignatureUrl': 'https://example.com/sig.png',
+      'mayorLogoUrl': 'https://example.com/mayor-logo.png',
+    });
+    expect(model.frontBackgroundUrl, 'https://example.com/front.png');
+    expect(model.frontAspectRatio, 1.6);
+    expect(model.mayorSignatureUrl, 'https://example.com/sig.png');
+    expect(model.mayorLogoUrl, 'https://example.com/mayor-logo.png');
+  });
+
+  test('fromJson defaults aspect ratios to a sane fallback when missing', () {
+    final model = IdCardTemplateModel.fromJson({
+      'frontBackgroundUrl': 'https://example.com/front.png',
+      'backBackgroundUrl': 'https://example.com/back.png',
+    });
+    expect(model.frontAspectRatio, 1.6);
+    expect(model.backAspectRatio, 1.6);
+  });
+
+  test('fromJson treats missing background URLs as null (no active template usable)', () {
+    final model = IdCardTemplateModel.fromJson({});
+    expect(model.frontBackgroundUrl, isNull);
+    expect(model.backBackgroundUrl, isNull);
+  });
+
+  test('fromJson treats empty/whitespace-only strings as null, not present', () {
+    // An admin can save the template form with fields left blank (e.g.
+    // activate before uploading every image), which round-trips through
+    // Firestore as '', not absent. '' must not satisfy a `!= null` check.
+    final model = IdCardTemplateModel.fromJson({
+      'frontBackgroundUrl': '',
+      'backBackgroundUrl': '   ',
+      'mayorSignatureUrl': '',
+      'mayorLogoUrl': '',
+    });
+    expect(model.frontBackgroundUrl, isNull);
+    expect(model.backBackgroundUrl, isNull);
+    expect(model.mayorSignatureUrl, isNull);
+    expect(model.mayorLogoUrl, isNull);
+  });
+}

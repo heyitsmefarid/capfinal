@@ -1,0 +1,2551 @@
+import { useState, useEffect, useRef } from 'react';
+import { useApp } from '../context/AppContext';
+import { useOutletContext, useNavigate, useLocation } from 'react-router-dom';
+import Header from '../components/layout/Header';
+import Swal from 'sweetalert2';
+import * as XLSX from 'xlsx';
+import { saveAs } from 'file-saver';
+import {
+  Users,
+  Search,
+  Filter,
+  Eye,
+  CheckCircle,
+  XCircle,
+  Pause,
+  Award,
+  Mail,
+  Phone,
+  MapPin,
+  BookOpen,
+  Calendar,
+  Clock,
+  ChevronLeft,
+  ChevronRight,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  Building2,
+  Upload,
+  Download,
+  RotateCcw,
+  KeyRound,
+  GraduationCap,
+  History,
+  FileCheck,
+} from 'lucide-react';
+import { matchesExact, matchesSearch } from '../utils/filtering';
+import { bulkCreateScholars, regenerateScholarPassword, setScholarAccountDisabled } from '../services/backendApi';
+import { validateImportRows } from '../utils/scholarImportValidation';
+import { canEdit } from '../utils/auth';
+import { computeGwa, getPassedSubjectsCount, getPendingSubjectsCount, getFailedOrIncCount } from '../utils/academicRecords';
+import { fetchAuditLogsForDocument, logAudit } from '../services/auditLog';
+import { computeLastActivity, isInactiveGraduate } from '../utils/scholarActivity';
+import { formatPersonName } from '../utils/nameFormat';
+import { getScholarAttendanceRows, hasAttendanceCoords } from '../utils/attendanceRecords';
+import { getPerSemGranted, getGrantBreakdown } from '../utils/granting';
+import { getSchoolSearchAlias, getSchoolDisplayLabel } from '../utils/schoolAbbreviations';
+import SchoolLabel from '../components/common/SchoolLabel';
+import { getProgramDisplayLabel } from '../utils/programAbbreviations';
+
+// SweetAlert2's `html:` option renders via innerHTML (unlike `text:`, which is
+// escaped automatically) — any Firestore- or uploaded-file-derived value
+// interpolated into an `html:` string must be escaped first, or a crafted
+// name/cell value (e.g. `<img src=x onerror=...>`) executes as HTML/JS in the
+// admin's browser the moment the dialog opens.
+const escapeHtml = (value) =>
+  String(value ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+
+export default function Scholars() {
+  const {
+    applicants, catalogSchools, catalogPrograms, updateApplicant, verifyScholarEnrollment, systemSettings, schoolYears,
+    getCorVerification, verifyCor, rejectCor, messages, sendDirectMessage, events,
+  } = useApp();
+  const numberOfSemesters = systemSettings?.numberOfSemesters || 8;
+  const { onMenuClick } = useOutletContext() || {};
+  const navigate = useNavigate();
+  const location = useLocation();
+  // Viewer role: read-only on this page — every add/edit/delete control below
+  // is gated behind this.
+  const editAllowed = canEdit();
+
+  // The scholar app stores the profile photo as a full URL, a data URI, or raw
+  // base64. Normalize all three into something an <img src> can render.
+  const resolveImageSrc = (pic) => {
+    const raw = String(pic || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('http') || raw.startsWith('data:')) return raw;
+    return `data:image/jpeg;base64,${raw}`;
+  };
+
+  // Scholar-supplied file URLs (e.g. corFileUrl) are Firestore fields, not
+  // guaranteed-safe values — `users/{id}` write rules allow any signed-in
+  // session to set them. Reject anything that isn't a real http(s) link
+  // before it ever reaches an <a href>, so a javascript: URI can't execute.
+  const isSafeHttpUrl = (url) => {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+    } catch {
+      return false;
+    }
+  };
+
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterSchool, setFilterSchool] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+  const [filterYearLevel, setFilterYearLevel] = useState('');
+  // 'not_enrolled' covers both an explicit 'Not Enrolled' verdict and no
+  // verdict yet (null) — either way, the office hasn't confirmed this
+  // scholar is enrolled for the active term, which is the useful "who still
+  // needs to be checked" view.
+  const [filterEnrollment, setFilterEnrollment] = useState('');
+  const [filterYearAwarded, setFilterYearAwarded] = useState('');
+  const [filterAccountStatus, setFilterAccountStatus] = useState('');
+  const [filterProgram, setFilterProgram] = useState('');
+  // Status-independent: identifies scholars at (numberOfSemesters - 1) —
+  // "7/8" — regardless of active/on-hold/terminated/graduated. See
+  // matchesGraduating below; never reads or writes status.
+  const [filterGraduating, setFilterGraduating] = useState('');
+  // Graduated scholars with no known activity (COR/COG submission, a
+  // message they sent, or time since archiving) past the configurable
+  // Inactivity Threshold in System Settings — a review filter only, never a
+  // status change. See utils/scholarActivity.js.
+  const [filterInactive, setFilterInactive] = useState('');
+  // Secondary filters collapsed behind a toggle by default — the filter bar
+  // had grown to 9 selects; Search/School/Program/Status stay always visible,
+  // the rest live here. Pure layout — no filter's value or logic changes.
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [selectedScholar, setSelectedScholar] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [sortConfig, setSortConfig] = useState({ column: 'name', direction: 'asc' });
+  const [showHistorySection, setShowHistorySection] = useState(false);
+  const [historyEntries, setHistoryEntries] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Collapse and clear the History section when switching to a different
+  // scholar (or closing the modal) so it doesn't show stale/wrong entries.
+  useEffect(() => {
+    setShowHistorySection(false);
+    setHistoryEntries([]);
+  }, [selectedScholar?.id]);
+
+  // Helper function to convert year level to ordinal format
+  const getYearLevelText = (yearLevel) => {
+    const ordinals = ['1st', '2nd', '3rd', '4th'];
+    return yearLevel && yearLevel <= 4 ? `${ordinals[yearLevel - 1]} Year` : `Year ${yearLevel}`;
+  };
+
+  // Helper function to format academic year
+  const getAcademicYear = (year) => {
+    if (!year) return 'N/A';
+    return `${year}-${year + 1}`;
+  };
+
+  // Used by the Attendance History section below — matches Attendance.jsx's
+  // own row-date formatting.
+  const formatAttendanceDate = (value) => {
+    if (!value) return '—';
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
+  // Admin confirmation flag read by Reports.jsx (Enrollment Verification /
+  // Agreement Monitoring reports) — nothing previously set it, so those
+  // reports always fell back to inferred text instead of a real admin call.
+  // A "Not Enrolled" verdict must carry a reason so the front office knows
+  // why, without having to track the scholar down again.
+  const handleEvaluateEnrollment = async () => {
+    const currentStatus = selectedScholar.enrollmentStatus === 'Verified' ? 'Verified' : 'Not Enrolled';
+    const currentReason = selectedScholar.enrollmentNotEnrolledReason || '';
+
+    // Guardrail: enrollment can't be verified for a term whose COR hasn't
+    // itself been admin-verified yet. Checked here (to disable the option
+    // up front) and again inside verifyScholarEnrollment (so this can't be
+    // bypassed by any other caller).
+    const activeSy = (schoolYears || []).find((s) => s.isActive);
+    const activeSem = activeSy?.semesters?.find((s) => s.isActive);
+    const activeTermKey = activeSy && activeSem ? `${activeSy.label}::${activeSem.name}` : null;
+    const corReady = activeTermKey && getCorVerification(selectedScholar, activeTermKey) === 'verified';
+
+    const { value: formValues } = await Swal.fire({
+      title: 'Evaluate Enrollment',
+      html: `
+        <div class="status-dropdown-wrap">
+          <label for="enrollment-select" class="status-dropdown-label">Is the scholar enrolled?</label>
+          <select id="enrollment-select" class="status-dropdown">
+            <option value="Verified" ${currentStatus === 'Verified' ? 'selected' : ''} ${corReady ? '' : 'disabled'}>Enrolled${corReady ? '' : ' (COR not yet verified)'}</option>
+            <option value="Not Enrolled" ${currentStatus === 'Not Enrolled' ? 'selected' : ''}>Not Enrolled</option>
+          </select>
+          ${!corReady ? '<p style="margin:8px 0 0;font-size:0.8rem;color:var(--text-secondary)">Verify this scholar\'s COR for the active term (see COR per Semester below) before enrollment can be marked Enrolled.</p>' : ''}
+        </div>
+        <div id="enrollment-reason-wrap" class="status-dropdown-wrap" style="margin-top:12px;${currentStatus === 'Not Enrolled' ? '' : 'display:none;'}">
+          <label for="enrollment-reason" class="status-dropdown-label">Reason for not enrolling</label>
+          <textarea id="enrollment-reason" class="status-reason-textarea"></textarea>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Save Evaluation',
+      confirmButtonColor: 'var(--primary)',
+      cancelButtonColor: '#6b7280',
+      didOpen: () => {
+        const select = document.getElementById('enrollment-select');
+        const reasonWrap = document.getElementById('enrollment-reason-wrap');
+        const reasonField = document.getElementById('enrollment-reason');
+        // Set as a value assignment (not HTML interpolation) so a reason
+        // containing markup/script is treated as plain text, not rendered.
+        if (reasonField) reasonField.value = currentReason;
+        select?.addEventListener('change', () => {
+          reasonWrap.style.display = select.value === 'Not Enrolled' ? '' : 'none';
+        });
+      },
+      preConfirm: () => {
+        const status = document.getElementById('enrollment-select')?.value;
+        const reason = document.getElementById('enrollment-reason')?.value.trim() || '';
+        if (status === 'Not Enrolled' && !reason) {
+          Swal.showValidationMessage('Please provide a reason why the scholar is not enrolled.');
+          return false;
+        }
+        return { status, reason: status === 'Not Enrolled' ? reason : '' };
+      },
+      customClass: {
+        popup: 'eval-status-modal',
+        actions: 'eval-status-actions',
+      },
+    });
+
+    if (!formValues) return;
+
+    const { status: newStatus, reason } = formValues;
+    try {
+      // Setting "Verified" also grants the scholar's currently active term —
+      // see verifyScholarEnrollment: a semester only counts once confirmed.
+      // Merge its return value so Semesters Used / Semester Records /
+      // Granted per Semester refresh in the modal immediately.
+      const updated = verifyScholarEnrollment(selectedScholar.id, newStatus, reason);
+      setSelectedScholar({ ...selectedScholar, ...updated });
+      Swal.fire({
+        icon: 'success',
+        title: 'Updated!',
+        text: `Enrollment status set to ${newStatus === 'Verified' ? 'Enrolled' : 'Not Enrolled'}`,
+        timer: 1500,
+        showConfirmButton: false,
+      });
+    } catch (error) {
+      Swal.fire({ icon: 'error', title: 'Error', text: error?.message || 'Failed to update enrollment status' });
+    }
+  };
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, filterSchool, filterProgram, filterStatus, filterYearLevel, filterYearAwarded, filterAccountStatus, filterEnrollment, filterGraduating, filterInactive]);
+
+  // Sorting handler
+  const handleSort = (column) => {
+    setSortConfig(prev => ({
+      column,
+      direction: prev.column === column && prev.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
+
+  // Sort icon component
+  const SortIcon = ({ column }) => {
+    if (sortConfig.column !== column) {
+      return <ArrowUpDown size={14} style={{ opacity: 0.3 }} />;
+    }
+    return sortConfig.direction === 'asc' ? 
+      <ArrowUp size={14} /> : 
+      <ArrowDown size={14} />;
+  };
+
+  // Filter scholars (an approved applicant becomes a City Scholar)
+  const scholars = applicants.filter(a =>
+    ['approved', 'active', 'on-hold', 'graduated', 'terminated'].includes(a.status)
+  );
+
+  // Deep link from NeedsVerification.jsx — it navigates here with
+  // { state: { scholarId } } so this page opens straight to that scholar's
+  // own profile (which includes the COR per Semester Verify/Reject section)
+  // instead of the plain list. Cleared right after use (replace, no new
+  // history entry) so refreshing or navigating back here doesn't reopen it.
+  useEffect(() => {
+    const targetId = location.state?.scholarId;
+    if (!targetId) return;
+    const target = applicants.find((a) => a.id === targetId);
+    if (target) setSelectedScholar(target);
+    navigate(location.pathname, { replace: true, state: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state?.scholarId]);
+
+  // School filter options: the eligible-schools catalog (managed in System
+  // Settings) PLUS any school that actually appears on a scholar record (covers
+  // schools not in the catalog), so every school present in the data is selectable.
+  const schoolFilterOptions = Array.from(new Set([
+    ...(catalogSchools || []).map(s => s?.name).filter(Boolean),
+    ...scholars.map(s => s?.school).filter(Boolean),
+  ])).sort((a, b) => a.localeCompare(b));
+
+  // Same pattern as schoolFilterOptions — catalog programs PLUS any program
+  // string actually present on a scholar record.
+  const programFilterOptions = Array.from(new Set([
+    ...(catalogPrograms || []).map(p => p?.name).filter(Boolean),
+    ...scholars.map(s => s?.program).filter(Boolean),
+  ])).sort((a, b) => a.localeCompare(b));
+
+  const filteredScholars = scholars.filter(scholar => {
+    const matchesSearchTerm = matchesSearch(
+      [
+        `${scholar.firstName} ${scholar.lastName}`,
+        scholar.scholarId,
+        scholar.email,
+        scholar.school,
+        getSchoolSearchAlias(scholar.school),
+      ],
+      searchTerm
+    );
+    const matchesSchool = matchesExact(scholar.school, filterSchool);
+    const matchesProgram = matchesExact(scholar.program, filterProgram);
+    const matchesStatus = !filterStatus || scholar.status === filterStatus;
+    // The real, independently-stored field — NOT derived from
+    // semestersUsed (see AppContext.jsx's enrollActiveScholarsInSemester,
+    // which no longer overwrites this). Selecting "1st Year" here is also
+    // the "First Year" filter — no separate control needed for that.
+    const matchesYearLevel = !filterYearLevel || Number(scholar.yearLevel) === Number(filterYearLevel);
+    const matchesYearAwarded = !filterYearAwarded || scholar.yearAwarded === Number(filterYearAwarded);
+    // accountDisabled is a new field (Task 9's migration hasn't touched legacy
+    // docs yet) — absence means the account is active, same as `false`.
+    const matchesAccountStatus =
+      !filterAccountStatus ||
+      (filterAccountStatus === 'disabled' ? scholar.accountDisabled === true : scholar.accountDisabled !== true);
+    const matchesEnrollment =
+      !filterEnrollment ||
+      (filterEnrollment === 'not_enrolled'
+        ? scholar.enrollmentStatus !== 'Verified'
+        : scholar.enrollmentStatus === 'Verified');
+    // Status-independent by design: a scholar at (numberOfSemesters - 1) is
+    // "graduating" whether Active, On-Hold, or Terminated — this never reads
+    // scholar.status, and never writes anything.
+    const matchesGraduating =
+      !filterGraduating || (scholar.semestersUsed || 0) === numberOfSemesters - 1;
+    // Review filter only — never reads/writes anything but the derived
+    // activity signal itself. Only ever true for graduated scholars.
+    const matchesInactive =
+      !filterInactive ||
+      (scholar.status === 'graduated' &&
+        isInactiveGraduate(scholar, messages, systemSettings?.inactivityThresholdDays));
+    return matchesSearchTerm && matchesSchool && matchesProgram && matchesStatus && matchesYearLevel && matchesYearAwarded && matchesAccountStatus && matchesEnrollment && matchesGraduating && matchesInactive;
+  }).sort((a, b) => {
+    const { column, direction } = sortConfig;
+    const multiplier = direction === 'asc' ? 1 : -1;
+    
+    switch (column) {
+      case 'name':
+        const nameA = `${a.lastName}, ${a.firstName}`.toLowerCase();
+        const nameB = `${b.lastName}, ${b.firstName}`.toLowerCase();
+        return nameA.localeCompare(nameB) * multiplier;
+      case 'scholarId':
+        return (a.scholarId || '').localeCompare(b.scholarId || '') * multiplier;
+      case 'school':
+        return a.school.localeCompare(b.school) * multiplier;
+      case 'program':
+        return (a.program || '').localeCompare(b.program || '') * multiplier;
+      case 'yearLevel':
+        return ((Number(a.yearLevel) || 0) - (Number(b.yearLevel) || 0)) * multiplier;
+      case 'yearAwarded':
+        return ((a.yearAwarded || 0) - (b.yearAwarded || 0)) * multiplier;
+      case 'semesters':
+        return ((a.semestersUsed || 0) - (b.semestersUsed || 0)) * multiplier;
+      case 'status':
+        return (a.status || '').localeCompare(b.status || '') * multiplier;
+      default:
+        return 0;
+    }
+  });
+
+  // Pagination
+  const totalPages = Math.ceil(filteredScholars.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedScholars = filteredScholars.slice(startIndex, endIndex);
+
+  const handleViewDetails = (scholar) => {
+    setSelectedScholar(scholar);
+  };
+
+  // Message a graduated scholar directly — reuses the existing
+  // sendDirectMessage mechanism (Messages.jsx uses the same function).
+  // Shows contact/status info up front; clicking "Send Message" (with
+  // Cancel available) is the required confirmation step.
+  const handleContactScholar = async (scholar) => {
+    const lastActivity = computeLastActivity(scholar, messages);
+    const infoHtml = `
+      <div style="text-align:left; font-size:0.85rem; background:var(--bg-tertiary); padding:10px 12px; border-radius:6px; margin-bottom:10px; line-height:1.6;">
+        <div><b>Email:</b> ${escapeHtml(scholar.email || '—')}</div>
+        <div><b>Contact #:</b> ${escapeHtml(scholar.contactNumber || scholar.phone || '—')}</div>
+        <div><b>School / Program:</b> ${escapeHtml(scholar.school || '—')} — ${escapeHtml(scholar.program || '—')}</div>
+        <div><b>Status:</b> Graduated</div>
+        <div><b>Last known activity:</b> ${lastActivity ? escapeHtml(lastActivity.toLocaleDateString()) : 'No record on file'}</div>
+      </div>
+    `;
+    const { value: body, isConfirmed } = await Swal.fire({
+      title: `Contact ${scholar.firstName || ''} ${scholar.lastName || ''}`,
+      html: infoHtml,
+      input: 'textarea',
+      inputLabel: 'Message',
+      inputPlaceholder: 'Type your message to this scholar...',
+      inputValidator: (v) => (!v || !v.trim() ? 'A message is required.' : undefined),
+      showCancelButton: true,
+      confirmButtonText: 'Send Message',
+      confirmButtonColor: 'var(--primary)',
+    });
+    if (!isConfirmed || !body) return;
+    if (!scholar.firestoreId) {
+      Swal.fire({ icon: 'error', title: 'Cannot send', text: 'This scholar has no linked account to message.' });
+      return;
+    }
+    try {
+      await sendDirectMessage(scholar.firestoreId, body.trim());
+      Swal.fire({ icon: 'success', title: 'Message sent', timer: 1600, showConfirmButton: false });
+    } catch (e) {
+      Swal.fire({ icon: 'error', title: 'Send failed', text: e?.message || 'Could not send the message.' });
+    }
+  };
+
+  // Reverse a termination directly from the Scholars list — returns the scholar
+  // to Active without waiting for the end-of-semester archive. The scholar's
+  // termination reason is cleared so a fresh evaluation starts clean.
+  const handleReactivate = async (scholar) => {
+    const result = await Swal.fire({
+      title: 'Reactivate scholar?',
+      html: `<b>${escapeHtml(scholar.firstName)} ${escapeHtml(scholar.lastName)}</b> will be moved back to <b>Active</b> and regain access to their scholarship.`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Reactivate',
+      confirmButtonColor: 'var(--primary)',
+    });
+    if (!result.isConfirmed) return;
+    try {
+      await updateApplicant(scholar.id, {
+        status: 'active',
+        terminationReason: '',
+      });
+      Swal.fire({
+        icon: 'success',
+        title: 'Reactivated',
+        text: `${scholar.firstName} ${scholar.lastName} is active again.`,
+        timer: 1800,
+        showConfirmButton: false,
+      });
+    } catch (e) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Reactivation failed',
+        text: e?.message || 'Could not reactivate the scholar.',
+      });
+    }
+  };
+
+  // Moved from the now-retired ScholarshipEvaluation.jsx — guardrails/
+  // confirmations unchanged, only relocated.
+  const handleEditStatus = async (scholar) => {
+    // 'graduated' is deliberately NOT selectable here — it must never be a
+    // direct one-click status edit (Rule 7). See handleGraduate below for the
+    // dedicated flow that either applies automatically (semester cap reached)
+    // or requires a typed justification (admin override).
+    const statusOptions = {
+      active: 'ACTIVE',
+      'on-hold': 'ON-HOLD',
+      terminated: 'TERMINATED',
+    };
+
+    // Treat a freshly 'approved' scholar as 'active' for the dropdown default.
+    const currentStatus = scholar.status === 'approved' ? 'active' : scholar.status;
+
+    const { value: selectedStatus } = await Swal.fire({
+      title: 'Edit Scholarship Status',
+      html: `
+        <div class="status-dropdown-wrap">
+          <label for="status-select" class="status-dropdown-label">Select status</label>
+          <select id="status-select" class="status-dropdown">
+            ${Object.entries(statusOptions)
+              .map(([value, label]) => `<option value="${value}" ${currentStatus === value ? 'selected' : ''}>${label}</option>`)
+              .join('')}
+          </select>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'Continue',
+      confirmButtonColor: 'var(--primary)',
+      cancelButtonColor: '#6b7280',
+      preConfirm: () => {
+        const selectElement = document.getElementById('status-select');
+        return selectElement?.value;
+      },
+      customClass: {
+        popup: 'eval-status-modal',
+        actions: 'eval-status-actions',
+      },
+    });
+
+    if (!selectedStatus) return;
+
+    const statusLabel = statusOptions[selectedStatus] || selectedStatus.toUpperCase();
+
+    const result = await Swal.fire({
+      title: `Apply Status: ${statusLabel}?`,
+      html: `
+        <div style="text-align: left;">
+          <p><strong>Scholar:</strong> ${formatPersonName(scholar)}</p>
+          <p><strong>Current Status:</strong> ${scholar.status?.toUpperCase()}</p>
+          <p><strong>Status to Apply:</strong> ${statusLabel}</p>
+        </div>
+      `,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonColor: selectedStatus === 'terminated' ? 'var(--danger)' : 'var(--primary)',
+      cancelButtonColor: '#6b7280',
+      confirmButtonText: 'Yes, apply it!',
+      customClass: {
+        popup: 'eval-status-modal',
+        actions: 'eval-status-actions',
+      },
+    });
+
+    if (result.isConfirmed) {
+      const updates = {};
+
+      if (selectedStatus === 'terminated') {
+        updates.terminationDate = new Date().toISOString().split('T')[0];
+        updates.terminationReason = scholar.terminationReason || 'Status updated by admin action';
+      }
+
+      updateApplicant(scholar.id, { status: selectedStatus, ...updates });
+      // Keep the Scholar View modal (if open on this same scholar) in sync —
+      // this action is now reachable from inside it, not just the table row.
+      if (selectedScholar?.id === scholar.id) {
+        setSelectedScholar({ ...selectedScholar, status: selectedStatus, ...updates });
+      }
+      logAudit({
+        action: 'UPDATE',
+        collection: 'users',
+        documentId: scholar.firestoreId || scholar.scholarId || String(scholar.id),
+        details: `Edited scholarship status for ${formatPersonName(scholar)}: ${scholar.status?.toUpperCase()} → ${statusLabel}`,
+      });
+
+      Swal.fire({
+        title: 'Applied!',
+        text: `Scholarship status updated to ${statusLabel}`,
+        icon: 'success',
+        timer: 2000,
+        showConfirmButton: false,
+      });
+    }
+  };
+
+  // Dedicated Graduate action (Rule 7) — the only path to a 'graduated'
+  // status. Applies directly once the scholar has reached the configured
+  // semester cap (the same condition AppContext's automatic graduation sweep
+  // already uses); below that, an admin can still graduate early, but only
+  // past a required typed justification — never a silent shortcut.
+  const handleGraduate = async (scholar) => {
+    const maxSemesters = systemSettings?.numberOfSemesters || 8;
+    const semestersUsed = scholar.semestersUsed || 0;
+    const eligible = semestersUsed >= maxSemesters;
+
+    let graduationReason = eligible ? `Reached semester cap (${semestersUsed}/${maxSemesters})` : null;
+
+    if (!eligible) {
+      const { value } = await Swal.fire({
+        title: 'Graduate Below Semester Cap?',
+        html: `<p style="text-align:left">${formatPersonName(scholar)} has completed <strong>${semestersUsed}/${maxSemesters}</strong> semesters — below the normal graduation requirement. Graduating early requires a justification.</p>`,
+        input: 'textarea',
+        inputLabel: 'Reason for early graduation',
+        inputPlaceholder: 'Enter justification...',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: 'var(--warning, #f59e0b)',
+        cancelButtonColor: '#6b7280',
+        confirmButtonText: 'Continue',
+        inputValidator: (v) => { if (!v || !v.trim()) return 'A reason is required to graduate below the semester cap.'; },
+      });
+      if (!value) return;
+      graduationReason = value.trim();
+    }
+
+    const result = await Swal.fire({
+      title: 'Confirm Graduation',
+      html: `
+        <div style="text-align: left;">
+          <p><strong>Scholar:</strong> ${formatPersonName(scholar)}</p>
+          <p><strong>Semesters Used:</strong> ${semestersUsed}/${maxSemesters}</p>
+          <p><strong>Reason:</strong> ${graduationReason}</p>
+        </div>
+      `,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonColor: 'var(--primary)',
+      cancelButtonColor: '#6b7280',
+      confirmButtonText: 'Yes, graduate this scholar',
+    });
+    if (!result.isConfirmed) return;
+
+    updateApplicant(scholar.id, { status: 'graduated', graduationReason });
+    // Keep the Scholar View modal (if open on this same scholar) in sync —
+    // this action is now reachable from inside it, not just the table row.
+    if (selectedScholar?.id === scholar.id) {
+      setSelectedScholar({ ...selectedScholar, status: 'graduated', graduationReason });
+    }
+    logAudit({
+      action: 'UPDATE',
+      collection: 'users',
+      documentId: scholar.firestoreId || scholar.scholarId || String(scholar.id),
+      details: eligible
+        ? `Graduated ${formatPersonName(scholar)} (${graduationReason})`
+        : `Graduated ${formatPersonName(scholar)} below semester cap — override reason: ${graduationReason}`,
+    });
+    Swal.fire({ title: 'Graduated!', text: `${formatPersonName(scholar)} has been marked as graduated.`, icon: 'success', timer: 2000, showConfirmButton: false });
+  };
+
+  // Resets a scholar's temporary password via the backend Cloud Function and
+  // shows the new one — same "show credentials" pattern as the bulk import's
+  // downloadCredentials flow, just surfaced inline for a single scholar. Only
+  // callable once the scholar has a real Auth account (scholar.uid set by
+  // bulkCreateScholars or Task 9's legacy migration).
+  const handleResetPassword = async (scholar) => {
+    if (!scholar.uid) return;
+    const confirm = await Swal.fire({
+      title: 'Reset password?',
+      html: `Generate a new temporary password for <b>${escapeHtml(scholar.firstName)} ${escapeHtml(scholar.lastName)}</b>? They will be required to change it on next login.`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Reset Password',
+      confirmButtonColor: 'var(--primary)',
+    });
+    if (!confirm.isConfirmed) return;
+
+    try {
+      const res = await regenerateScholarPassword({ targetUid: scholar.uid });
+      await Swal.fire({
+        icon: 'success',
+        title: 'Password reset',
+        html: `New temporary password for <b>${escapeHtml(scholar.firstName)} ${escapeHtml(scholar.lastName)}</b>:<br/><code style="font-size:1.1em">${escapeHtml(res.password)}</code><br/>They must change it on next login.`,
+        confirmButtonColor: 'var(--primary)',
+      });
+    } catch (err) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Reset failed',
+        text: err?.message || 'Could not reset the password. Check that the backend is running.',
+      });
+    }
+  };
+
+  // Disables/re-enables the scholar's Firebase Auth sign-in via the backend
+  // Cloud Function. Toggles off the scholar's CURRENT accountDisabled state
+  // (defaults to active/false when the field is absent, same as the filter
+  // above), so the confirm dialog and resulting label always describe the
+  // action that is about to happen. Only callable once scholar.uid is set.
+  const handleToggleAccountDisabled = async (scholar) => {
+    if (!scholar.uid) return;
+    const nextDisabled = !scholar.accountDisabled;
+    const confirm = await Swal.fire({
+      title: 'Change scholar status?',
+      html: `
+        <div style="text-align:left">
+          <p><strong>Scholar:</strong> ${escapeHtml(formatPersonName(scholar))}</p>
+          <p><strong>Current status:</strong> ${scholar.accountDisabled ? 'DISABLED' : 'ACTIVE'}</p>
+          <p><strong>New status:</strong> ${nextDisabled ? 'DISABLED' : 'ACTIVE'}</p>
+          <p style="color:var(--text-secondary); font-size:0.85em;">
+            ${nextDisabled
+              ? 'This scholar will no longer be able to sign in to the scholar app.'
+              : 'This scholar will regain access to the scholar app.'}
+          </p>
+        </div>
+      `,
+      icon: 'warning',
+      showCancelButton: true,
+      cancelButtonText: 'Cancel',
+      confirmButtonText: 'Confirm',
+      confirmButtonColor: nextDisabled ? '#dc2626' : 'var(--primary)',
+    });
+    if (!confirm.isConfirmed) return;
+
+    try {
+      await setScholarAccountDisabled({ targetUid: scholar.uid, disabled: nextDisabled });
+      logAudit({
+        action: 'UPDATE',
+        collection: 'users',
+        documentId: scholar.firestoreId || scholar.scholarId || String(scholar.id),
+        details: `${nextDisabled ? 'Disabled' : 'Enabled'} sign-in access for ${formatPersonName(scholar)}`,
+      });
+      Swal.fire({
+        icon: 'success',
+        title: nextDisabled ? 'Account disabled' : 'Account enabled',
+        timer: 1500,
+        showConfirmButton: false,
+      });
+    } catch (err) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Update failed',
+        text: err?.message || 'Could not update the account. Check that the backend is running.',
+      });
+    }
+  };
+
+  const getStatusIcon = (status) => {
+    switch (status) {
+      case 'approved':
+      case 'active':
+        return <CheckCircle className="status-icon-active" size={20} />;
+      case 'on-hold':
+        return <Pause className="status-icon-warning" size={20} />;
+      case 'graduated':
+        return <Award className="status-icon-success" size={20} />;
+      case 'terminated':
+        return <XCircle className="status-icon-danger" size={20} />;
+      default:
+        return <XCircle className="status-icon-danger" size={20} />;
+    }
+  };
+
+  const getSemesterRecords = (scholar) => {
+    const grades = scholar?.grades || [];
+    // The scholar app writes COR uploads to `corSubmissions` (see
+    // CorSubmissionsNotifier in grades_provider.dart) — `certificatesOfEnrollment`
+    // is never written by either app, so reading it here always found nothing.
+    const coes = scholar?.corSubmissions || [];
+    const enrolled = scholar?.enrolledSemesters || [];
+
+    const recordMap = new Map();
+
+    // Seed records from the semesters the scholar was enrolled into when the
+    // admin advanced the active term, so they appear even before grades/COE.
+    enrolled.forEach((entry) => {
+      const key = `${entry.schoolYear || 'N/A'}|${entry.semester || 'N/A'}`;
+      recordMap.set(key, {
+        schoolYear: entry.schoolYear || 'N/A',
+        semester: entry.semester || 'N/A',
+        gradeValue: null,
+        subjects: [],
+        corStatus: null,
+        corFileName: null,
+      });
+    });
+
+    grades.forEach((gradeEntry) => {
+      const key = `${gradeEntry.schoolYear || 'N/A'}|${gradeEntry.semester || 'N/A'}`;
+      recordMap.set(key, {
+        schoolYear: gradeEntry.schoolYear || 'N/A',
+        semester: gradeEntry.semester || 'N/A',
+        gradeValue: gradeEntry.gwa ?? null,
+        subjects: gradeEntry.subjects || [],
+        corStatus: null,
+        corFileName: null,
+      });
+    });
+
+    coes.forEach((coeEntry) => {
+      const key = `${coeEntry.academicYear || 'N/A'}|${coeEntry.semester || 'N/A'}`;
+      const existing = recordMap.get(key) || {
+        schoolYear: coeEntry.academicYear || 'N/A',
+        semester: coeEntry.semester || 'N/A',
+        gradeValue: null,
+        subjects: [],
+      };
+
+      recordMap.set(key, {
+        ...existing,
+        // corSubmissions carries no explicit status field — its presence
+        // (a fileUrl) is itself the submission.
+        corStatus: coeEntry.fileUrl ? 'submitted' : 'pending',
+        corFileName: coeEntry.fileName || null,
+        corFileUrl: coeEntry.fileUrl || null,
+      });
+    });
+
+    const semOrder = { '1st Semester': 1, '2nd Semester': 2 };
+
+    return Array.from(recordMap.values()).sort((a, b) => {
+      if (a.schoolYear !== b.schoolYear) {
+        return String(b.schoolYear).localeCompare(String(a.schoolYear));
+      }
+      return (semOrder[a.semester] || 99) - (semOrder[b.semester] || 99);
+    });
+  };
+
+  // ── Bulk scholar account import ───────────────────────────────────────────
+  const fileInputRef = useRef(null);
+  const IMPORT_CHUNK_SIZE = 50;
+
+  const handleDownloadTemplate = () => {
+    const example = [
+      {
+        'Scholar ID': '',
+        'First Name': 'Juan',
+        'Middle Name': '',
+        'Last Name': 'Dela Cruz',
+        Email: 'juan.delacruz@example.com',
+        School: 'Divine Word College',
+        Program: 'Bachelor of Science in Information Technology',
+        'Year Level': '2',
+        Status: 'Active',
+        'Total Scholarship Semesters': '8',
+        'Active Scholarship Semesters': '2',
+      },
+    ];
+    const ws = XLSX.utils.json_to_sheet(example);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Scholars');
+    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    saveAs(
+      new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+      'scholar_accounts_import_template.xlsx'
+    );
+  };
+
+  const handleImportClick = () => fileInputRef.current?.click();
+
+  // Builds a credentials workbook (email + temporary password) from the rows the
+  // backend actually created, so the admin can distribute logins.
+  const downloadCredentials = (created) => {
+    const rows = created.map((r) => ({
+      'Full Name': r.fullName || '',
+      Email: r.email || '',
+      'Temporary Password': r.password || '',
+      'Scholar ID': r.scholarId || '',
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Credentials');
+    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    saveAs(
+      new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+      `scholar_credentials_${new Date().toISOString().split('T')[0]}.xlsx`
+    );
+  };
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+      if (rows.length === 0) {
+        Swal.fire({ icon: 'info', title: 'Empty file', text: 'No rows were found in the first sheet.' });
+        return;
+      }
+
+      const existingEmails = new Set(applicants.map((a) => (a.email || '').trim().toLowerCase()).filter(Boolean));
+      const existingScholarIds = new Set(applicants.map((a) => a.scholarId).filter(Boolean));
+      const validated = validateImportRows(rows, { existingEmails, existingScholarIds });
+
+      const errorRows = validated.filter((r) => !r.valid);
+      const okRows = validated.filter((r) => r.valid);
+      const previewHtml = `
+        <div style="max-height:300px;overflow:auto;text-align:left;font-size:0.85em">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr><th>Row</th><th>Name</th><th>Status</th></tr></thead>
+            <tbody>
+              ${validated.map((r) => `
+                <tr style="color:${r.valid ? (r.warnings.length ? '#b8860b' : '#2e7d32') : '#c62828'}">
+                  <td>${r.index + 1}</td>
+                  <td>${escapeHtml(r.row['First Name'])} ${escapeHtml(r.row['Last Name'])}</td>
+                  <td>${escapeHtml(r.errors.concat(r.warnings).join('; ')) || 'OK'}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+
+      const confirm = await Swal.fire({
+        title: 'Review import',
+        html: `${okRows.length} of ${validated.length} row(s) will be imported (${errorRows.length} have errors and will be skipped).${previewHtml}`,
+        icon: errorRows.length ? 'warning' : 'question',
+        showCancelButton: true,
+        confirmButtonText: `Create ${okRows.length} account(s)`,
+        confirmButtonColor: 'var(--primary)',
+      });
+      if (!confirm.isConfirmed || okRows.length === 0) return;
+
+      const importRows = okRows.map((r) => r.row);
+
+      // Send in chunks so a large migration never hits the function timeout,
+      // and the admin sees live progress.
+      const totals = { created: 0, skipped: 0, failed: 0 };
+      const allResults = [];
+      Swal.fire({
+        title: 'Creating accounts…',
+        html: `0 / ${importRows.length}`,
+        allowOutsideClick: false,
+        didOpen: () => Swal.showLoading(),
+      });
+
+      for (let i = 0; i < importRows.length; i += IMPORT_CHUNK_SIZE) {
+        const chunk = importRows.slice(i, i + IMPORT_CHUNK_SIZE);
+        const res = await bulkCreateScholars(chunk);
+        totals.created += res.created || 0;
+        totals.skipped += res.skipped || 0;
+        totals.failed += res.failed || 0;
+        if (Array.isArray(res.results)) allResults.push(...res.results);
+        Swal.update({
+          title: 'Creating accounts…',
+          html: `${Math.min(i + IMPORT_CHUNK_SIZE, importRows.length)} / ${importRows.length}`,
+        });
+        Swal.showLoading();
+      }
+
+      const createdRows = allResults.filter((r) => r.status === 'created');
+      const result = await Swal.fire({
+        icon: totals.failed > 0 ? 'warning' : 'success',
+        title: 'Import complete',
+        html:
+          `Created: <b>${totals.created}</b><br/>` +
+          `Skipped (email already exists): <b>${totals.skipped}</b><br/>` +
+          `Failed: <b>${totals.failed}</b>`,
+        showCancelButton: true,
+        confirmButtonText: 'Download credentials sheet',
+        cancelButtonText: 'Close',
+        confirmButtonColor: 'var(--primary)',
+      });
+      if (result.isConfirmed && createdRows.length > 0) {
+        downloadCredentials(createdRows);
+      }
+    } catch (err) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Import failed',
+        text: err?.message || 'Could not process the file. Check that the backend is running.',
+      });
+    }
+  };
+
+  // How many of the 6 secondary filters currently have a value — shown as a
+  // badge on the collapsed "Advanced Filters" toggle so an applied filter is
+  // never silently hidden from view.
+  const advancedFilterCount = [
+    filterYearLevel, filterYearAwarded, filterAccountStatus, filterEnrollment, filterGraduating, filterInactive,
+  ].filter(Boolean).length;
+
+  return (
+    <div className="page scholars-page">
+      <Header
+        title="Scholars Management"
+        subtitle="View and manage active scholar profiles"
+        onMenuClick={onMenuClick}
+      />
+
+      <div className="page-content">
+        {/* Bulk import toolbar */}
+        <div className="actions-bar" style={{ marginBottom: '1rem' }}>
+          <div className="actions-left" />
+          <div className="actions-right" style={{ display: 'flex', gap: '0.5rem' }}>
+            <button className="btn btn-secondary" onClick={handleDownloadTemplate}>
+              <Download size={18} />
+              Template
+            </button>
+            {editAllowed && (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  style={{ display: 'none' }}
+                  onChange={handleFileChange}
+                />
+                <button className="btn btn-primary" onClick={handleImportClick}>
+                  <Upload size={18} />
+                  Import Scholars
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Filters — Search/School/Program/Status stay always visible;
+            everything else is behind Advanced Filters below. */}
+        <div className="filters-bar">
+          <div className="search-box">
+            <Search size={18} />
+            <input
+              type="text"
+              placeholder="Search by name or Scholar ID..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+          <select value={filterSchool} onChange={(e) => setFilterSchool(e.target.value)}>
+            <option value="">All Schools</option>
+            {schoolFilterOptions.map(name => (
+              <option key={name} value={name} title={name}>{getSchoolDisplayLabel(name)}</option>
+            ))}
+          </select>
+          <select value={filterProgram} onChange={(e) => setFilterProgram(e.target.value)}>
+            <option value="">All Programs</option>
+            {programFilterOptions.map(name => (
+              <option key={name} value={name} title={name}>{getProgramDisplayLabel(name)}</option>
+            ))}
+          </select>
+          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+            <option value="">All Status</option>
+            <option value="active">Active</option>
+            <option value="on-hold">On-Hold</option>
+            <option value="graduated">Graduated</option>
+            <option value="terminated">Terminated</option>
+          </select>
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            onClick={() => setShowAdvancedFilters((v) => !v)}
+          >
+            <Filter size={14} />
+            {showAdvancedFilters ? 'Hide' : 'Advanced'} Filters
+            {!showAdvancedFilters && advancedFilterCount > 0 && ` (${advancedFilterCount})`}
+          </button>
+        </div>
+
+        {showAdvancedFilters && (
+          <div className="filters-bar">
+            <select value={filterYearLevel} onChange={(e) => setFilterYearLevel(e.target.value)}>
+              <option value="">All Year Levels</option>
+              <option value="1">1st Year</option>
+              <option value="2">2nd Year</option>
+              <option value="3">3rd Year</option>
+              <option value="4">4th Year</option>
+            </select>
+            <select value={filterYearAwarded} onChange={(e) => setFilterYearAwarded(e.target.value)}>
+              <option value="">All Academic Years</option>
+              {[...new Set(scholars.map(s => s.yearAwarded).filter(Boolean))]
+                .sort((a, b) => b - a)
+                .map(year => (
+                  <option key={year} value={year}>{getAcademicYear(year)}</option>
+                ))}
+            </select>
+            <select value={filterAccountStatus} onChange={(e) => setFilterAccountStatus(e.target.value)}>
+              <option value="">All Accounts</option>
+              <option value="active">Active Accounts</option>
+              <option value="disabled">Disabled Accounts</option>
+            </select>
+            <select value={filterEnrollment} onChange={(e) => setFilterEnrollment(e.target.value)}>
+              <option value="">All Enrollment</option>
+              <option value="not_enrolled">Not Yet Enrolled</option>
+              <option value="enrolled">Enrolled</option>
+            </select>
+            <select value={filterGraduating} onChange={(e) => setFilterGraduating(e.target.value)} title="Scholars at the final scholarship semester, regardless of status">
+              <option value="">All Scholars</option>
+              <option value="graduating">🎓 Graduating ({numberOfSemesters - 1}/{numberOfSemesters})</option>
+            </select>
+            <select value={filterInactive} onChange={(e) => setFilterInactive(e.target.value)} title="Graduated scholars with no known activity past the configured Inactivity Threshold">
+              <option value="">All Scholars</option>
+              <option value="inactive">⚠ Inactive (No Activity)</option>
+            </select>
+          </div>
+        )}
+
+        {/* Scholars Data Table */}
+        <div className="table-container">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th onClick={() => handleSort('name')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    Scholar Name
+                    <SortIcon column="name" />
+                  </div>
+                </th>
+                <th onClick={() => handleSort('school')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    School
+                    <SortIcon column="school" />
+                  </div>
+                </th>
+                <th onClick={() => handleSort('program')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    Program
+                    <SortIcon column="program" />
+                  </div>
+                </th>
+                <th onClick={() => handleSort('yearLevel')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    Year Level
+                    <SortIcon column="yearLevel" />
+                  </div>
+                </th>
+                <th onClick={() => handleSort('yearAwarded')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    Academic Year Granted
+                    <SortIcon column="yearAwarded" />
+                  </div>
+                </th>
+                <th onClick={() => handleSort('semesters')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    Semesters
+                    <SortIcon column="semesters" />
+                  </div>
+                </th>
+                <th onClick={() => handleSort('status')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    Status
+                    <SortIcon column="status" />
+                  </div>
+                </th>
+                <th>Enrolled</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paginatedScholars.map(scholar => (
+                <tr key={scholar.id}>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div className="scholar-avatar-small">
+                        {resolveImageSrc(scholar.profilePicture) ? (
+                          <img
+                            src={resolveImageSrc(scholar.profilePicture)}
+                            alt={`${scholar.firstName} ${scholar.lastName}`}
+                            className="profile-avatar-img"
+                          />
+                        ) : (
+                          <>{scholar.firstName[0]}{scholar.lastName[0]}</>
+                        )}
+                      </div>
+                      <div>
+                        <strong>{scholar.lastName}, {scholar.firstName}</strong>
+                        <br />
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                          {scholar.email}
+                        </span>
+                      </div>
+                    </div>
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <Building2 size={16} style={{ color: 'var(--primary-color)' }} />
+                      <SchoolLabel name={scholar.school} />
+                    </div>
+                  </td>
+                  <td style={{ fontSize: '0.875rem' }} title={scholar.program}>{getProgramDisplayLabel(scholar.program)}</td>
+                  <td>
+                    <span style={{
+                      display: 'inline-block',
+                      padding: '0.25rem 0.5rem',
+                      background: 'var(--bg-secondary)',
+                      borderRadius: '0.25rem',
+                      fontWeight: 600
+                    }}>
+                      {scholar.yearLevel ? getYearLevelText(Number(scholar.yearLevel)) : '—'}
+                    </span>
+                  </td>
+                  <td>
+                    <span style={{
+                      display: 'inline-block',
+                      padding: '0.25rem 0.5rem',
+                      background: 'rgba(45, 149, 150, 0.18)',
+                      borderRadius: '0.25rem',
+                      fontWeight: 600,
+                      color: 'var(--primary-light)'
+                    }}>
+                      {getAcademicYear(scholar.yearAwarded)}
+                    </span>
+                  </td>
+                  <td>
+                    <span style={{
+                      display: 'inline-block',
+                      padding: '0.25rem 0.5rem',
+                      borderRadius: '0.25rem',
+                      fontWeight: 700,
+                      background: scholar.semestersUsed >= numberOfSemesters - 2 ? 'rgba(234, 179, 8, 0.18)' : 'rgba(45, 149, 150, 0.18)',
+                      color: scholar.semestersUsed >= numberOfSemesters - 2 ? '#fbbf24' : 'var(--primary-light)'
+                    }}>
+                      {scholar.semestersUsed || 0}/{numberOfSemesters}
+                    </span>
+                    {(scholar.semestersUsed || 0) === numberOfSemesters - 1 && (
+                      <span title="Graduating — reached the final scholarship semester" style={{ marginLeft: 6, fontSize: '0.85rem' }}>
+                        🎓
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    {scholar.status === 'graduated' ? (
+                      // Graduated is never part of the Active/Disabled toggle
+                      // — it stays the plain, non-interactive badge, changed
+                      // only via the dedicated Graduate action (Scholar View
+                      // → Administrative Actions).
+                      <>
+                        <span className={`status-badge ${scholar.status}`}>
+                          {getStatusIcon(scholar.status)}
+                          {scholar.status?.toUpperCase()}
+                        </span>
+                        {isInactiveGraduate(scholar, messages, systemSettings?.inactivityThresholdDays) && (
+                          <span
+                            title="No known activity for longer than the configured Inactivity Threshold"
+                            style={{ marginLeft: 6, fontSize: '0.85rem' }}
+                          >
+                            ⚠
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      // A single toggle-style control for account sign-in
+                      // access (accountDisabled) — the scholarship status
+                      // itself (on-hold/terminated) is unaffected by this and
+                      // never converted; see handleToggleAccountDisabled.
+                      <>
+                        <button
+                          type="button"
+                          className={`status-badge status-toggle-btn ${scholar.accountDisabled ? 'terminated' : 'active'}`}
+                          title={
+                            !scholar.uid
+                              ? 'Not available — this scholar has no linked account yet'
+                              : scholar.accountDisabled
+                              ? "Click to re-enable this scholar's sign-in access"
+                              : "Click to disable this scholar's sign-in access"
+                          }
+                          disabled={!scholar.uid || !editAllowed}
+                          onClick={() => handleToggleAccountDisabled(scholar)}
+                        >
+                          {scholar.accountDisabled ? <XCircle size={14} /> : <CheckCircle size={14} />}
+                          {scholar.accountDisabled ? 'DISABLED' : 'ACTIVE'}
+                        </button>
+                        {(scholar.status === 'on-hold' || scholar.status === 'terminated') && (
+                          <span className="status-toggle-subnote">
+                            {scholar.status === 'on-hold' ? 'On-Hold' : 'Terminated'}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </td>
+                  <td>
+                    <span className={`enrollment-status-badge ${
+                      scholar.enrollmentStatus === 'Verified'
+                        ? 'verified'
+                        : scholar.enrollmentStatus === 'Not Enrolled'
+                        ? 'not-enrolled'
+                        : 'unverified'
+                    }`}>
+                      {scholar.enrollmentStatus === 'Verified'
+                        ? 'ENROLLED'
+                        : scholar.enrollmentStatus === 'Not Enrolled'
+                        ? 'NOT ENROLLED'
+                        : 'FOR VERIFICATION'}
+                    </span>
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button
+                        className="btn btn-sm btn-primary"
+                        onClick={() => handleViewDetails(scholar)}
+                      >
+                        <Eye size={16} />
+                        View
+                      </button>
+                      {editAllowed && scholar.status === 'graduated' && (
+                        <button
+                          className="btn btn-sm"
+                          title="Contact this graduated scholar"
+                          onClick={() => handleContactScholar(scholar)}
+                          style={{ background: 'rgba(45, 149, 150, 0.15)', color: 'var(--primary-light)' }}
+                        >
+                          <Mail size={16} />
+                          Contact
+                        </button>
+                      )}
+                      {editAllowed && scholar.status === 'terminated' && (
+                        <button
+                          className="btn btn-sm"
+                          title="Reactivate — return this scholar to Active"
+                          onClick={() => handleReactivate(scholar)}
+                          style={{ background: 'rgba(45, 149, 150, 0.15)', color: 'var(--primary-light)' }}
+                        >
+                          <RotateCcw size={16} />
+                          Reactivate
+                        </button>
+                      )}
+                      {editAllowed && (
+                        <button
+                          className="btn btn-sm"
+                          title={
+                            !scholar.uid
+                              ? 'Not available — this scholar has no linked account yet'
+                              : 'Reset/regenerate this scholar\'s temporary password'
+                          }
+                          disabled={!scholar.uid}
+                          onClick={() => handleResetPassword(scholar)}
+                          style={{
+                            background: !scholar.uid ? 'var(--bg-secondary)' : 'rgba(59, 130, 246, 0.15)',
+                            color: !scholar.uid ? 'var(--text-secondary)' : '#3b82f6',
+                            opacity: !scholar.uid ? 0.6 : 1,
+                            cursor: !scholar.uid ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          <KeyRound size={16} />
+                          Reset Password
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {filteredScholars.length === 0 && (
+            <div className="empty-state">
+              <Users size={48} />
+              <p>No scholars found</p>
+            </div>
+          )}
+        </div>
+
+        {/* Pagination */}
+        {filteredScholars.length > 0 && (
+          <div className="pagination-container">
+            <div className="pagination-info">
+              Showing {startIndex + 1} to {Math.min(endIndex, filteredScholars.length)} of {filteredScholars.length} scholars
+            </div>
+            <div className="pagination-controls">
+              <button
+                className="pagination-btn"
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                disabled={currentPage === 1}
+              >
+                <ChevronLeft size={18} />
+                Previous
+              </button>
+              
+              <span style={{
+                padding: '0 1rem',
+                fontSize: '0.875rem',
+                fontWeight: '500',
+                color: 'var(--text-primary)'
+              }}>
+                Page {currentPage} of {totalPages}
+              </span>
+              
+              <button
+                className="pagination-btn"
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                disabled={currentPage >= totalPages}
+              >
+                Next
+                <ChevronRight size={18} />
+              </button>
+            </div>
+            <div className="pagination-select-container">
+              <label>Items per page:</label>
+              <select 
+                className="pagination-select"
+                value={itemsPerPage}
+                onChange={(e) => {
+                  setItemsPerPage(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+              >
+                <option value={5}>5</option>
+                <option value={10}>10</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Scholar Details Modal */}
+      {selectedScholar && (
+        <div className="modal-overlay" onClick={() => setSelectedScholar(null)}>
+          <div className="modal-content scholar-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Scholar Profile</h2>
+              <button className="close-btn" onClick={() => setSelectedScholar(null)}>×</button>
+            </div>
+            
+            <div className="modal-body">
+              <div className="profile-section">
+                <div className="profile-header">
+                  <div className="profile-avatar-large">
+                    {resolveImageSrc(selectedScholar.profilePicture) ? (
+                      <img
+                        src={resolveImageSrc(selectedScholar.profilePicture)}
+                        alt={`${selectedScholar.firstName} ${selectedScholar.lastName}`}
+                        className="profile-avatar-img"
+                      />
+                    ) : (
+                      <>{selectedScholar.firstName[0]}{selectedScholar.lastName[0]}</>
+                    )}
+                  </div>
+                  <div>
+                    <h3>{selectedScholar.firstName} {selectedScholar.middleName} {selectedScholar.lastName}</h3>
+                    <p className="scholar-id-large">{selectedScholar.scholarId}</p>
+                    <div className="status-badge-row">
+                      <div className={`status-badge-large status-${selectedScholar.status}`}>
+                        {selectedScholar.status?.toUpperCase()}
+                      </div>
+                      <span className={`enrollment-status-badge ${
+                        selectedScholar.enrollmentStatus === 'Verified'
+                          ? 'verified'
+                          : selectedScholar.enrollmentStatus === 'Not Enrolled'
+                          ? 'not-enrolled'
+                          : 'unverified'
+                      }`}>
+                        {selectedScholar.enrollmentStatus === 'Verified'
+                          ? 'ENROLLED'
+                          : selectedScholar.enrollmentStatus === 'Not Enrolled'
+                          ? 'NOT ENROLLED'
+                          : 'FOR VERIFICATION'}
+                      </span>
+                      {editAllowed && (
+                        <button
+                          className="btn-enrollment-toggle"
+                          onClick={() => handleEvaluateEnrollment()}
+                        >
+                          Evaluate Enrollment
+                        </button>
+                      )}
+                    </div>
+                    {selectedScholar.enrollmentStatus === 'Not Enrolled' && selectedScholar.enrollmentNotEnrolledReason && (
+                      <p className="enrollment-reason-note">
+                        Reason: {selectedScholar.enrollmentNotEnrolledReason}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="profile-grid">
+                  <div className="profile-item">
+                    <Mail size={18} />
+                    <div>
+                      <span className="label">Email</span>
+                      <span className="value">{selectedScholar.email}</span>
+                    </div>
+                  </div>
+                  <div className="profile-item">
+                    <Phone size={18} />
+                    <div>
+                      <span className="label">Phone</span>
+                      <span className="value">{selectedScholar.phone}</span>
+                    </div>
+                  </div>
+                  <div className="profile-item">
+                    <MapPin size={18} />
+                    <div>
+                      <span className="label">Address</span>
+                      <span className="value">{selectedScholar.address}</span>
+                    </div>
+                  </div>
+                  <div className="profile-item">
+                    <Calendar size={18} />
+                    <div>
+                      <span className="label">Birth Date</span>
+                      <span className="value">{selectedScholar.birthDate}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="academic-section">
+                  <h4>Academic Information</h4>
+                  <div className="academic-grid">
+                    <div className="academic-item">
+                      <span className="label">School</span>
+                      <span className="value">{selectedScholar.school}</span>
+                    </div>
+                    <div className="academic-item">
+                      <span className="label">Program</span>
+                      <span className="value">{selectedScholar.program}</span>
+                    </div>
+                    <div className="academic-item">
+                      <span className="label">Year Level</span>
+                      <span className="value">
+                        {selectedScholar.yearLevel ? getYearLevelText(Number(selectedScholar.yearLevel)) : '—'}
+                      </span>
+                    </div>
+                    <div className="academic-item">
+                      <span className="label">Semester Records</span>
+                      <span className="value">{getSemesterRecords(selectedScholar).length || 0}</span>
+                    </div>
+                    <div className="academic-item">
+                      <span className="label">Scholarship Progression</span>
+                      <span className="value">
+                        {selectedScholar.semestersUsed || 0}/{numberOfSemesters} Scholarship Semesters
+                        {(selectedScholar.semestersUsed || 0) === numberOfSemesters - 1 && (
+                          <span style={{ marginLeft: 6, color: '#fbbf24', fontWeight: 700 }}>🎓 Graduating</span>
+                        )}
+                        {(selectedScholar.semestersUsed || 0) >= numberOfSemesters && (
+                          <span style={{ marginLeft: 6, color: 'var(--text-secondary)', fontStyle: 'italic', fontWeight: 400, fontSize: '0.85em' }}>
+                            (Scholarship scope completed)
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="academic-item">
+                      <span className="label">Academic Year Granted</span>
+                      <span className="value">{getAcademicYear(selectedScholar.yearAwarded)}</span>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: '1rem' }}>
+                    <h5 style={{
+                      margin: '0 0 0.75rem 0',
+                      fontSize: '0.95rem',
+                      fontWeight: 700,
+                      color: 'var(--text-primary)'
+                    }}>
+                      COR per Semester
+                    </h5>
+
+                    {getSemesterRecords(selectedScholar).length > 0 ? (
+                      <div className="semester-records-container">
+                        <table className="semester-records-table">
+                          <thead>
+                            <tr>
+                              <th>School Year</th>
+                              <th>Semester</th>
+                              <th>Grades</th>
+                              <th>COR</th>
+                              <th>Verification</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {getSemesterRecords(selectedScholar).map((record) => {
+                              const termKey = `${record.schoolYear}::${record.semester}`;
+                              const termSubjects = record.subjects || [];
+                              const termPassed = getPassedSubjectsCount(termSubjects);
+                              const termPending = getPendingSubjectsCount(termSubjects);
+                              const termFailed = getFailedOrIncCount(termSubjects);
+                              const termGwa = computeGwa(termSubjects);
+                              const corStatus = isSafeHttpUrl(record.corFileUrl)
+                                ? getCorVerification(selectedScholar, termKey)
+                                : 'not_submitted';
+                              const badge = {
+                                verified: { label: 'Verified', bg: 'rgba(34,197,94,0.15)', color: '#86efac' },
+                                rejected: { label: 'Rejected', bg: 'rgba(239,68,68,0.15)', color: '#fca5a5' },
+                                pending_verification: { label: 'Pending Verification', bg: 'rgba(245,158,11,0.15)', color: '#fcd34d' },
+                              }[corStatus];
+
+                              const applyUpdate = (updated) => { if (updated) setSelectedScholar(updated); };
+
+                              const handleVerifyCor = () => applyUpdate(verifyCor(selectedScholar.id, termKey));
+                              const handleRejectCor = async () => {
+                                const { value: reason } = await Swal.fire({
+                                  title: `Reject COR for ${record.schoolYear} ${record.semester}?`,
+                                  input: 'textarea',
+                                  inputLabel: 'Reason for rejection',
+                                  icon: 'warning',
+                                  showCancelButton: true,
+                                  confirmButtonColor: 'var(--danger)',
+                                  cancelButtonColor: '#6b7280',
+                                  confirmButtonText: 'Reject',
+                                  inputValidator: (v) => { if (!v || !v.trim()) return 'A reason is required.'; },
+                                });
+                                if (!reason) return;
+                                applyUpdate(rejectCor(selectedScholar.id, termKey, reason.trim()));
+                              };
+
+                              return (
+                                <tr key={`${record.schoolYear}-${record.semester}`}>
+                                  <td>{record.schoolYear}</td>
+                                  <td>{record.semester}</td>
+                                  <td style={{ fontSize: '0.78rem' }}>
+                                    {termSubjects.length > 0 ? (
+                                      <>
+                                        <div>
+                                          <span style={{ color: '#22c55e', fontWeight: 600 }}>{termPassed} Passed</span>
+                                          {termPending > 0 && <span style={{ color: '#94a3b8' }}> · {termPending} Pending</span>}
+                                          {termFailed > 0 && <span style={{ color: '#ef4444' }}> · {termFailed} Failed/INC</span>}
+                                        </div>
+                                        {termGwa && (
+                                          <div style={{ color: 'var(--text-secondary)' }}>GWA {termGwa}{termPending > 0 ? ' (may change)' : ''}</div>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <span style={{ color: 'var(--text-secondary)' }}>No grades on file</span>
+                                    )}
+                                  </td>
+                                  <td>
+                                    {isSafeHttpUrl(record.corFileUrl) ? (
+                                      <a
+                                        href={record.corFileUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        style={{
+                                          color: 'var(--primary-light)',
+                                          textDecoration: 'underline',
+                                          fontWeight: 600,
+                                          fontSize: '0.8125rem',
+                                        }}
+                                      >
+                                        View COR
+                                      </a>
+                                    ) : (
+                                      <span style={{ color: 'var(--text-secondary)', fontSize: '0.8125rem' }}>
+                                        Not Submitted
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td>
+                                    {badge ? (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                        <span style={{
+                                          fontSize: '0.68rem', fontWeight: 700, padding: '2px 8px', borderRadius: '4px',
+                                          background: badge.bg, color: badge.color,
+                                        }}>
+                                          {badge.label}
+                                        </span>
+                                        {corStatus !== 'verified' && (
+                                          <>
+                                            <button type="button" className="btn btn-sm btn-success" style={{ padding: '2px 8px', fontSize: '0.72rem' }} onClick={handleVerifyCor}>
+                                              Verify
+                                            </button>
+                                            <button type="button" className="btn btn-sm btn-danger" style={{ padding: '2px 8px', fontSize: '0.72rem' }} onClick={handleRejectCor}>
+                                              Reject
+                                            </button>
+                                          </>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <span style={{ color: 'var(--text-secondary)', fontSize: '0.8125rem' }}>—</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="coe-empty">
+                        <BookOpen size={24} style={{ opacity: 0.3 }} />
+                        <p>No semester grade/COR records yet.</p>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary"
+                      style={{ marginTop: '0.75rem' }}
+                      onClick={() => navigate('/academic-records', { state: { scholarId: selectedScholar.id } })}
+                    >
+                      View Full Academic Records
+                    </button>
+                  </div>
+                </div>
+
+                <div className="academic-section">
+                  <h4>Attendance History</h4>
+                  {(() => {
+                    const rows = getScholarAttendanceRows(selectedScholar, events, null);
+                    if (rows.length === 0) {
+                      return (
+                        <div className="coe-empty">
+                          <Calendar size={24} style={{ opacity: 0.3 }} />
+                          <p>No events recorded yet.</p>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="semester-records-container">
+                        <table className="semester-records-table">
+                          <thead>
+                            <tr>
+                              <th>Event</th>
+                              <th>Date</th>
+                              <th>Status</th>
+                              <th>Excuse</th>
+                              <th>Time Logged</th>
+                              <th>Method</th>
+                              <th>Location</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((row) => {
+                              const attendance = row.record;
+                              const excuse = attendance?.excuse;
+                              return (
+                                <tr key={row.key}>
+                                  <td>{row.name}</td>
+                                  <td>{formatAttendanceDate(row.date)}</td>
+                                  <td>
+                                    {attendance ? (
+                                      attendance.present ? (
+                                        <span className="status-badge status-approved">
+                                          <CheckCircle size={14} /> Present
+                                        </span>
+                                      ) : (
+                                        <span className="status-badge status-rejected">
+                                          <XCircle size={14} /> Absent
+                                        </span>
+                                      )
+                                    ) : (
+                                      <span style={{ color: 'var(--text-secondary)' }}>Not Recorded</span>
+                                    )}
+                                  </td>
+                                  <td>
+                                    {excuse ? (
+                                      <span
+                                        className={`status-badge ${excuse.status === 'Approved' ? 'status-approved' : 'status-rejected'}`}
+                                        title={excuse.notes || ''}
+                                      >
+                                        {excuse.status} — {excuse.reason}
+                                      </span>
+                                    ) : (
+                                      <span style={{ color: 'var(--text-secondary)' }}>—</span>
+                                    )}
+                                  </td>
+                                  <td>
+                                    {attendance ? (
+                                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8125rem' }}>
+                                        <Clock size={14} />
+                                        {attendance.timeLogged || '—'}
+                                      </span>
+                                    ) : (
+                                      <span style={{ color: 'var(--text-secondary)' }}>-</span>
+                                    )}
+                                  </td>
+                                  <td style={{ fontSize: '0.8125rem' }}>
+                                    {attendance
+                                      ? (attendance.loggedVia || (attendance.markedVia === 'qr_scanner' ? 'QR Scan' : attendance.markedVia) || 'Manual')
+                                      : <span style={{ color: 'var(--text-secondary)' }}>-</span>}
+                                  </td>
+                                  <td>
+                                    {hasAttendanceCoords(attendance) ? (
+                                      <a
+                                        href={`https://www.google.com/maps?q=${attendance.latitude},${attendance.longitude}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.8125rem', color: 'var(--primary-light)' }}
+                                      >
+                                        <MapPin size={14} /> View on map
+                                      </a>
+                                    ) : (
+                                      <span style={{ color: 'var(--text-secondary)' }}>—</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div className="academic-section">
+                  <h4>Granted per Semester</h4>
+                  {/* Read-only — reuses the same data/helpers as the Granting
+                      page (utils/granting.js). Full financial editing lives
+                      exclusively there; this is history only. */}
+                  {(() => {
+                    const perSemGranted = getPerSemGranted(selectedScholar, catalogPrograms, systemSettings?.scholarshipCap);
+                    const { semesterRows } = getGrantBreakdown(selectedScholar, perSemGranted);
+                    const totalGranted = semesterRows.reduce((sum, row) => sum + row.grantedAmount, 0);
+                    return semesterRows.length > 0 ? (
+                      <div className="semester-records-container">
+                        <table className="semester-records-table">
+                          <thead>
+                            <tr>
+                              <th>School Year</th>
+                              <th>Semester</th>
+                              <th>Granted</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {semesterRows.map((row, index) => (
+                              <tr key={`${row.schoolYear}-${row.semester}-${index}`}>
+                                <td>{row.schoolYear}</td>
+                                <td>{row.semester}</td>
+                                <td>₱{row.grantedAmount.toLocaleString()}</td>
+                              </tr>
+                            ))}
+                            <tr>
+                              <td colSpan={2} style={{ fontWeight: 700 }}>Total Granted</td>
+                              <td style={{ fontWeight: 700, color: '#10b981' }}>₱{totalGranted.toLocaleString()}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="coe-empty">
+                        <p>No semester records available.</p>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div className="academic-section history-section">
+                  <h4>History</h4>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={async () => {
+                      const next = !showHistorySection;
+                      setShowHistorySection(next);
+                      if (next && historyEntries.length === 0 && !historyLoading) {
+                        setHistoryLoading(true);
+                        const ids = [selectedScholar.firestoreId, selectedScholar.scholarId, String(selectedScholar.id)];
+                        const entries = await fetchAuditLogsForDocument(ids);
+                        setHistoryEntries(entries);
+                        setHistoryLoading(false);
+                      }
+                    }}
+                  >
+                    <History size={14} /> {showHistorySection ? 'Hide' : 'Show'} History
+                  </button>
+
+                  {showHistorySection && (
+                    <div style={{ marginTop: '0.75rem' }}>
+                      {historyLoading ? (
+                        <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Loading history…</p>
+                      ) : historyEntries.length === 0 ? (
+                        <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                          No recorded history for this scholar yet.
+                        </p>
+                      ) : (
+                        <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '0.5rem' }}>
+                          <table className="semester-records-table">
+                            <thead>
+                              <tr>
+                                <th>Date/Time</th>
+                                <th>Action</th>
+                                <th>By</th>
+                                <th>Details</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {historyEntries.map((entry) => (
+                                <tr key={entry.id}>
+                                  <td style={{ whiteSpace: 'nowrap', fontSize: '0.78rem' }}>
+                                    {entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '—'}
+                                  </td>
+                                  <td style={{ fontSize: '0.78rem' }}>{entry.action || '—'}</td>
+                                  <td style={{ fontSize: '0.78rem' }}>{entry.userEmail || entry.userId || '—'}</td>
+                                  <td style={{ fontSize: '0.78rem' }}>{entry.details?.message || '—'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="academic-section">
+                  <h4>Administrative Actions</h4>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+                    {editAllowed && (
+                      <button
+                        className="btn btn-sm btn-secondary"
+                        title="Edit Status — Active, On-Hold, or Terminated (Graduated is never a direct edit)"
+                        onClick={() => handleEditStatus(selectedScholar)}
+                      >
+                        <FileCheck size={16} />
+                        Edit Status
+                      </button>
+                    )}
+                    {editAllowed && selectedScholar.status !== 'graduated' && selectedScholar.status !== 'terminated' && (
+                      <button
+                        className="btn btn-sm btn-secondary"
+                        title="Graduate this scholar"
+                        onClick={() => handleGraduate(selectedScholar)}
+                      >
+                        <Award size={16} />
+                        Graduate
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style jsx>{`
+        .scholars-page {
+          background: var(--bg-secondary);
+        }
+
+        .stats-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+          gap: 1.5rem;
+          margin-bottom: 2rem;
+        }
+
+        .stat-card {
+          background: var(--card-bg);
+          padding: 1.5rem;
+          border-radius: 0.5rem;
+          border: 1px solid var(--border-color);
+          display: flex;
+          align-items: center;
+          gap: 1rem;
+        }
+
+        .stat-card-blue .stat-icon { background: rgba(45, 149, 150, 0.2); color: var(--primary-light); }
+        .stat-card-green .stat-icon { background: rgba(34, 197, 94, 0.2); color: var(--success-light); }
+        .stat-card-yellow .stat-icon { background: rgba(245, 158, 11, 0.2); color: var(--warning-light); }
+        .stat-card-purple .stat-icon { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
+        .stat-card-red .stat-icon { background: rgba(239, 68, 68, 0.2); color: var(--danger-light); }
+
+        .stat-icon {
+          padding: 0.75rem;
+          border-radius: 0.5rem;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .stat-info {
+          display: flex;
+          flex-direction: column;
+        }
+
+        .stat-value {
+          font-size: 1.875rem;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
+
+        .stat-label {
+          font-size: 0.875rem;
+          color: var(--text-secondary);
+        }
+
+        .scholars-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+          gap: 1.5rem;
+        }
+
+        .scholar-card {
+          background: var(--card-bg);
+          border: 1px solid var(--border-color);
+          border-radius: 0.5rem;
+          overflow: hidden;
+          transition: all 0.2s;
+        }
+
+        .scholar-card:hover {
+          box-shadow: var(--shadow-lg);
+          transform: translateY(-2px);
+        }
+
+        .scholar-card-header {
+          padding: 1.5rem;
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          border-bottom: 1px solid var(--border-color);
+        }
+
+        .scholar-avatar {
+          width: 60px;
+          height: 60px;
+          border-radius: 50%;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 1.5rem;
+          font-weight: 600;
+        }
+
+        .scholar-avatar-small {
+          width: 40px;
+          height: 40px;
+          border-radius: 50%;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 0.875rem;
+          font-weight: 600;
+          flex-shrink: 0;
+          overflow: hidden;
+        }
+
+        .scholar-status {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 0.5rem;
+        }
+
+        .scholar-card-body {
+          padding: 1.5rem;
+        }
+
+        .scholar-card-body h3 {
+          font-size: 1.125rem;
+          font-weight: 600;
+          margin-bottom: 0.25rem;
+          color: var(--text-primary);
+        }
+
+        .scholar-id {
+          font-size: 0.875rem;
+          color: var(--text-secondary);
+          margin-bottom: 1rem;
+          font-family: 'Courier New', monospace;
+        }
+
+        .scholar-info {
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
+          margin-bottom: 1rem;
+        }
+
+        .info-item {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          font-size: 0.875rem;
+          color: var(--text-secondary);
+        }
+
+        .info-item svg {
+          color: var(--primary-color);
+        }
+
+        .scholar-stats {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 1rem;
+          padding: 1rem;
+          background: var(--bg-secondary);
+          border-radius: 0.375rem;
+        }
+
+        .scholar-stats > div {
+          display: flex;
+          flex-direction: column;
+        }
+
+        .scholar-stats .stat-label {
+          font-size: 0.75rem;
+          color: var(--text-secondary);
+        }
+
+        .scholar-stats .stat-value {
+          font-size: 1.25rem;
+          font-weight: 600;
+          color: var(--text-primary);
+        }
+
+        .scholar-card-footer {
+          padding: 1rem 1.5rem;
+          border-top: 1px solid var(--border-color);
+        }
+
+        .scholar-card-footer .btn {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 0.5rem;
+        }
+
+        .scholar-modal {
+          max-width: 1100px;
+          max-height: 90vh;
+          overflow-y: auto;
+          background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.95) 100%);
+          border: 2px solid rgba(45, 149, 150, 0.3);
+          border-radius: var(--radius-lg);
+          box-shadow: var(--shadow-lg), 0 0 40px rgba(45, 149, 150, 0.15);
+        }
+
+        .profile-header {
+          display: flex;
+          gap: 1.5rem;
+          margin-bottom: 2rem;
+        }
+
+        .profile-avatar-large {
+          width: 100px;
+          height: 100px;
+          border-radius: 50%;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 2.5rem;
+          font-weight: 600;
+          overflow: hidden;
+          flex-shrink: 0;
+        }
+
+        .profile-avatar-img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+
+        .scholar-id-large {
+          font-size: 1rem;
+          color: var(--text-secondary);
+          font-family: 'Courier New', monospace;
+          margin: 0.5rem 0;
+        }
+
+        .status-badge-row {
+          display: flex;
+          align-items: center;
+          gap: 0.625rem;
+          flex-wrap: wrap;
+        }
+
+        .status-badge-large {
+          display: inline-block;
+          padding: 0.5rem 1rem;
+          border-radius: 0.375rem;
+          font-size: 0.875rem;
+          font-weight: 600;
+        }
+
+        .profile-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+          gap: 1.5rem;
+          margin-bottom: 2rem;
+        }
+
+        .profile-item {
+          display: flex;
+          gap: 1rem;
+          align-items: flex-start;
+        }
+
+        .profile-item svg {
+          color: var(--primary-color);
+          flex-shrink: 0;
+        }
+
+        .profile-item .label {
+          display: block;
+          font-size: 0.75rem;
+          color: var(--text-secondary);
+          margin-bottom: 0.25rem;
+        }
+
+        .profile-item .value {
+          display: block;
+          font-size: 0.875rem;
+          color: var(--text-primary);
+        }
+
+        .academic-section {
+          margin-top: 2rem;
+          padding-top: 2rem;
+          border-top: 2px solid var(--border-color);
+        }
+
+        .academic-section h4 {
+          font-size: 1.125rem;
+          font-weight: 700;
+          margin-bottom: 1.25rem;
+          color: var(--text-primary);
+        }
+
+        /* COE Styles */
+        .btn-coe-add {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          padding: 0.625rem 1.25rem;
+          background: #10b981;
+          color: white;
+          border: none;
+          border-radius: 0.5rem;
+          font-size: 0.875rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          box-shadow: 0 2px 4px rgba(16, 185, 129, 0.3);
+        }
+        .btn-coe-add:hover {
+          background: #059669;
+          box-shadow: 0 4px 8px rgba(16, 185, 129, 0.4);
+          transform: translateY(-1px);
+        }
+
+        .coe-form {
+          background: var(--bg-primary);
+          border: 1px solid var(--border-color);
+          border-radius: 0.5rem;
+          padding: 1.25rem;
+          margin-bottom: 1.25rem;
+        }
+        .coe-form-row {
+          display: flex;
+          gap: 1rem;
+          align-items: flex-end;
+          flex-wrap: wrap;
+        }
+        .coe-form-field {
+          display: flex;
+          flex-direction: column;
+          gap: 0.375rem;
+          flex: 1;
+          min-width: 150px;
+        }
+        .coe-form-field label {
+          font-size: 0.8125rem;
+          font-weight: 600;
+          color: var(--text-muted);
+          text-transform: uppercase;
+          letter-spacing: 0.025em;
+        }
+        .coe-form-field select,
+        .coe-form-field input {
+          padding: 0.625rem 0.75rem;
+          border: 2px solid var(--border-color);
+          border-radius: 0.5rem;
+          background-color: var(--bg-secondary);
+          color: var(--text-primary);
+          font-size: 0.875rem;
+        }
+        .coe-form-field select:focus,
+        .coe-form-field input:focus {
+          outline: none;
+          border-color: #10b981;
+          box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+        }
+        .coe-form-actions {
+          display: flex;
+          gap: 0.5rem;
+          align-items: center;
+          padding-bottom: 2px;
+        }
+
+        .coe-status {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.375rem;
+          padding: 0.25rem 0.75rem;
+          border-radius: 9999px;
+          font-size: 0.8125rem;
+          font-weight: 600;
+        }
+        .coe-status-verified {
+          background: rgba(16, 185, 129, 0.15);
+          color: #34d399;
+        }
+        .coe-status-pending {
+          background: rgba(245, 158, 11, 0.15);
+          color: #fbbf24;
+        }
+        .coe-status-rejected {
+          background: rgba(239, 68, 68, 0.15);
+          color: #f87171;
+        }
+
+        .coe-action-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 30px;
+          height: 30px;
+          border: none;
+          border-radius: 0.375rem;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+        .coe-verify-btn {
+          background: rgba(16, 185, 129, 0.15);
+          color: #34d399;
+        }
+        .coe-verify-btn:hover {
+          background: rgba(16, 185, 129, 0.3);
+        }
+        .coe-reject-btn {
+          background: rgba(245, 158, 11, 0.15);
+          color: #fbbf24;
+        }
+        .coe-reject-btn:hover {
+          background: rgba(245, 158, 11, 0.3);
+        }
+        .coe-delete-btn {
+          background: rgba(239, 68, 68, 0.15);
+          color: #f87171;
+        }
+        .coe-delete-btn:hover {
+          background: rgba(239, 68, 68, 0.3);
+        }
+
+        .coe-empty {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 0.75rem;
+          padding: 2rem;
+          color: var(--text-secondary);
+          background: var(--bg-primary);
+          border-radius: 0.5rem;
+          border: 1px dashed var(--border-color);
+        }
+        .coe-empty p {
+          margin: 0;
+          font-size: 0.875rem;
+        }
+
+        .academic-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          gap: 1.5rem;
+          background: var(--bg-primary);
+          padding: 1.5rem;
+          border-radius: 0.5rem;
+          border: 1px solid var(--border-color);
+        }
+
+        .semester-records-container {
+          border-radius: 0.5rem;
+          overflow: hidden;
+          border: 1px solid var(--border-color);
+        }
+
+        .semester-records-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 0.875rem;
+        }
+
+        .semester-records-table thead {
+          background: var(--bg-secondary);
+        }
+
+        .semester-records-table th {
+          padding: 0.75rem 1rem;
+          text-align: left;
+          font-weight: 600;
+          color: var(--text-muted);
+          font-size: 0.8125rem;
+          text-transform: uppercase;
+          letter-spacing: 0.025em;
+          border-bottom: 1px solid var(--border-color);
+        }
+
+        .semester-records-table td {
+          padding: 0.75rem 1rem;
+          color: var(--text-primary);
+          border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+        }
+
+        .semester-records-table tbody tr:hover {
+          background: rgba(45, 149, 150, 0.05);
+        }
+
+        .academic-item {
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
+        }
+
+        .academic-item .label {
+          font-size: 0.8125rem;
+          font-weight: 600;
+          color: var(--text-muted);
+          text-transform: uppercase;
+          letter-spacing: 0.025em;
+          margin-bottom: 0.25rem;
+        }
+
+        .academic-item .value {
+          font-size: 1rem;
+          font-weight: 600;
+          color: var(--text-primary);
+        }
+
+        .enrollment-status-badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 0.25rem 0.625rem;
+          border-radius: 9999px;
+          font-size: 0.75rem;
+          font-weight: 700;
+          letter-spacing: 0.025em;
+        }
+
+        /* Active/Disabled account toggle — reuses .status-badge's own
+           active/terminated color language so it stays visually consistent
+           with every other status pill, just made clickable. */
+        .status-toggle-btn {
+          cursor: pointer;
+          font: inherit;
+          transition: filter 0.15s ease, transform 0.15s ease;
+        }
+
+        .status-toggle-btn:hover:not(:disabled) {
+          filter: brightness(1.08);
+          transform: translateY(-1px);
+        }
+
+        .status-toggle-btn:disabled {
+          cursor: not-allowed;
+          opacity: 0.55;
+        }
+
+        .status-toggle-subnote {
+          display: block;
+          margin-top: 0.3rem;
+          font-size: 0.7rem;
+          color: var(--text-secondary);
+        }
+
+        .enrollment-status-badge.verified {
+          background: rgba(34, 197, 94, 0.15);
+          color: #4ade80;
+          border: 1px solid rgba(34, 197, 94, 0.4);
+        }
+
+        .enrollment-status-badge.unverified {
+          background: rgba(148, 163, 184, 0.15);
+          color: var(--text-secondary);
+          border: 1px solid var(--border-color);
+        }
+
+        .enrollment-status-badge.not-enrolled {
+          background: rgba(239, 68, 68, 0.15);
+          color: #f87171;
+          border: 1px solid rgba(239, 68, 68, 0.4);
+        }
+
+        .enrollment-reason-note {
+          margin: 0.375rem 0 0;
+          font-size: 0.8rem;
+          color: #f87171;
+        }
+
+        .btn-enrollment-toggle {
+          padding: 0.375rem 0.75rem;
+          background: transparent;
+          color: var(--primary-light);
+          border: 1px solid var(--primary);
+          border-radius: 0.375rem;
+          font-size: 0.75rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+
+        .btn-enrollment-toggle:hover {
+          background: rgba(45, 149, 150, 0.12);
+        }
+
+        /* "Evaluate Enrollment" SweetAlert2 dialog — self-contained (doesn't
+           rely on another page's styled-jsx having mounted first). */
+        :global(.swal2-popup.eval-status-modal) {
+          width: 460px !important;
+          border-radius: 16px !important;
+          padding: 1.6rem 1.4rem 1.2rem !important;
+        }
+
+        :global(.swal2-popup.eval-status-modal .swal2-title) {
+          font-size: 1.5rem;
+          margin-bottom: 0.9rem !important;
+        }
+
+        :global(.swal2-popup.eval-status-modal .status-dropdown-wrap) {
+          width: 100%;
+          display: flex;
+          flex-direction: column;
+          gap: 0.45rem;
+          margin-top: 0.2rem;
+          text-align: left;
+        }
+
+        :global(.swal2-popup.eval-status-modal .status-dropdown-label) {
+          font-size: 0.8rem;
+          font-weight: 600;
+          color: var(--text-secondary);
+          letter-spacing: 0.01em;
+        }
+
+        :global(.swal2-popup.eval-status-modal .status-dropdown) {
+          width: 100% !important;
+          min-height: 46px;
+          border-radius: 10px;
+          padding: 0 12px;
+          font-size: 0.95rem;
+          background: var(--bg-secondary) !important;
+          color: var(--text-primary) !important;
+          border: 1px solid var(--border-color) !important;
+          appearance: none;
+          -webkit-appearance: none;
+          -moz-appearance: none;
+          background-image: linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%), linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
+          background-position: calc(100% - 18px) calc(50% - 3px), calc(100% - 12px) calc(50% - 3px);
+          background-size: 6px 6px, 6px 6px;
+          background-repeat: no-repeat;
+          color-scheme: dark;
+        }
+
+        :global(.swal2-popup.eval-status-modal .status-dropdown:focus) {
+          outline: none;
+          border-color: var(--primary) !important;
+          box-shadow: 0 0 0 3px rgba(45, 149, 150, 0.2) !important;
+        }
+
+        :global(.swal2-popup.eval-status-modal .status-dropdown option) {
+          background: var(--card-bg);
+          color: var(--text-primary);
+        }
+
+        :global(.swal2-popup.eval-status-modal .status-reason-textarea) {
+          width: 100% !important;
+          min-height: 90px;
+          margin: 0 !important;
+          border-radius: 10px;
+          padding: 10px 12px;
+          font-size: 0.9rem;
+          font-family: inherit;
+          resize: vertical;
+          background: var(--bg-secondary) !important;
+          color: var(--text-primary) !important;
+          border: 1px solid var(--border-color) !important;
+          box-shadow: none !important;
+        }
+
+        :global(.swal2-popup.eval-status-modal .status-reason-textarea:focus) {
+          outline: none;
+          border-color: var(--primary) !important;
+          box-shadow: 0 0 0 3px rgba(45, 149, 150, 0.2) !important;
+        }
+
+        :global(.swal2-popup.eval-status-modal .status-reason-textarea::placeholder) {
+          color: var(--text-secondary);
+        }
+
+        :global(.swal2-actions.eval-status-actions) {
+          width: 100%;
+          justify-content: center;
+          gap: 10px;
+        }
+
+        :global(.swal2-actions.eval-status-actions .swal2-confirm),
+        :global(.swal2-actions.eval-status-actions .swal2-cancel) {
+          min-width: 92px;
+          border-radius: 10px !important;
+        }
+
+
+
+      `}</style>
+    </div>
+  );
+}

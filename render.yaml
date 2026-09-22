@@ -1,0 +1,68 @@
+# Render Blueprint for the BFCSP application-form PDF service.
+#
+# This exists so the scholar app's "Preview application form" works in shipped
+# builds. The app falls back to the Firebase Cloud Functions URL when no
+# FORM_BASE_URL is supplied at build time, and this project deliberately does
+# not deploy Cloud Functions (Blaze plan not required — see
+# backend/functions/local-form-server.js), so that fallback 404s. Hosting the
+# standalone server here gives release APKs a reachable endpoint.
+#
+# To deploy: push this repo to GitHub, then in Render choose
+# New → Blueprint → select the repo → Apply. Every field below is read from
+# this file, so there is nothing to fill in by hand.
+#
+# After the first deploy, copy the service URL and build the app with it:
+#   flutter build apk --release \
+#     --dart-define=FORM_BASE_URL=https://<service>.onrender.com
+#
+# Note: the `free` plan sleeps after ~15 minutes idle and cold-starts in
+# roughly 50 seconds. The app issues a best-effort warm-up ping when the
+# applicant opens the form screen (BfcspFormApi.warmUp) and allows 60s for
+# generation, which covers a cold start. Move to a paid plan for an
+# always-on instance.
+services:
+  - type: web
+    name: bfcsp-form-server
+    runtime: node
+    plan: free
+    # Closest free region to Calapan City / Oriental Mindoro.
+    region: singapore
+    rootDir: backend/functions
+    # `npm ci` (not `install`) so builds honour the committed package-lock.json.
+    buildCommand: npm ci
+    startCommand: npm start
+    # local-form-server.js answers GET / with {"status":"ok"}. Without this,
+    # Render's probe would hit the catch-all 404 and hold the service unhealthy.
+    healthCheckPath: /
+    envVars:
+      # Matches "engines": { "node": "20" } in backend/functions/package.json.
+      - key: NODE_VERSION
+        value: "20"
+
+  # Runs scheduled-backup.js once a day. Cron Jobs (unlike a free Web
+  # Service) aren't affected by idle-sleep, so this is the reliable place for
+  # anything that must run on a schedule even if no admin ever opens the
+  # browser. The script itself checks admin-ui's chosen backup frequency
+  # (Administration > Backup & Restore) and only actually does anything once
+  # a week/month has elapsed since the last run — see scheduled-backup.js's
+  # header comment for why "check daily" beats scheduling the exact cron
+  # expression directly.
+  - type: cron
+    name: iskonnect-scheduled-backup
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: backend/functions
+    buildCommand: npm ci
+    startCommand: node scheduled-backup.js
+    schedule: "0 0 * * *" # every day at 00:00 UTC
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      # Full JSON contents of a Firebase service account key (Project
+      # Settings > Service Accounts > Generate New Private Key in the
+      # Firebase console). `sync: false` means Render won't accept a value
+      # from this file — set it as a secret directly in the Render
+      # dashboard for this service. NEVER commit the actual key to this repo.
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
