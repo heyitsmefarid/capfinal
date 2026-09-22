@@ -12,6 +12,16 @@ import 'announcement_notifications_native.dart'
 class AnnouncementNotificationService {
   static Future<void> init() => impl.initAnnouncementNotifications();
 
+  /// Shows an arbitrary notification through the same channel and icon, so a
+  /// push that arrives while the app is open looks like every other one.
+  static Future<void> show({
+    required int id,
+    required String title,
+    required String body,
+  }) {
+    return impl.showAnnouncementNotification(id: id, title: title, body: body);
+  }
+
   static Future<void> notify(AnnouncementModel announcement) {
     return impl.showAnnouncementNotification(
       id: announcement.id.hashCode & 0x7fffffff,

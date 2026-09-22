@@ -16,6 +16,16 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:requestLegacyExternalStorage="true">
+        <!-- Applied to pushes that arrive while the app is closed, where
+             Android builds the notification itself and never runs our Dart
+             code. Without these it uses the full-colour launcher icon (which
+             renders as a white square) and an unnamed channel. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_notification" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="announcements" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

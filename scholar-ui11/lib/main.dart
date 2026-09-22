@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:iskonnectttt/core/constants/firebase_config.dart';
 import 'package:iskonnectttt/core/services/announcement_notification_service.dart';
+import 'package:iskonnectttt/core/services/push_notification_service.dart';
 import 'package:iskonnectttt/core/services/event_reminder_service.dart';
 import 'package:iskonnectttt/core/theme/app_theme.dart';
 import 'package:iskonnectttt/core/router/app_router.dart';
@@ -22,6 +23,9 @@ void main() async {
   } catch (_) {}
   try {
     await AnnouncementNotificationService.init();
+  } catch (_) {}
+  try {
+    await PushNotificationService.init();
   } catch (_) {}
 
   // Set preferred orientations

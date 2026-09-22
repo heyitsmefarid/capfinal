@@ -3,6 +3,30 @@ import { collection, onSnapshot, doc, setDoc, addDoc, deleteDoc, updateDoc, arra
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { initializeFirebase } from '../services/firebase';
 import { logAudit } from '../services/auditLog';
+import { sendPush } from '../services/backendApi';
+
+// Tells a scholar their standing changed, on their phone, app closed or not.
+// The status sweeps run in EVERY open admin tab, so each send carries a dedupe
+// key — the server lets the first through and drops the rest.
+const STATUS_PUSH_TEXT = {
+  'on-hold': ['Scholarship on hold', 'Your scholarship is on hold. Open the app to see what to complete.'],
+  active: ['Scholarship restored', 'You are active again. Your grant resumes this semester.'],
+  terminated: ['Scholarship ended', 'Your scholarship has been terminated. Contact the CED office.'],
+  graduated: ['Congratulations, graduate!', 'Your scholarship is complete. Thank you for being part of the programme.'],
+};
+
+function pushScholarStatus(applicant, status, term) {
+  const text = STATUS_PUSH_TEXT[status];
+  const uid = applicant?.firestoreId || (applicant?.id ? String(applicant.id) : null);
+  if (!text || !uid) return;
+  sendPush({
+    audience: { uids: [uid] },
+    title: text[0],
+    body: text[1],
+    data: { route: '/dashboard' },
+    dedupeKey: `status:${uid}:${status}:${term?.schoolYear || '-'}::${term?.semester || '-'}`,
+  });
+}
 import { getUsername } from '../utils/auth';
 import { DEFAULT_SCHOOLS, DEFAULT_PROGRAMS } from '../services/localSettingsStore';
 import { syncCatalogToFirestore } from '../services/seedFirestoreCatalog';
@@ -752,6 +776,7 @@ export function AppProvider({ children }) {
     return activeSy && activeSem ? { schoolYear: activeSy.label, semester: activeSem.name } : null;
   };
 
+
   const [schools, setSchools] = useState(initialSchools);
   // Eligible schools/programs catalog — Firestore-backed so edits made in one
   // browser reach every admin device and the scholar app (which reads the same
@@ -908,6 +933,16 @@ export function AppProvider({ children }) {
       createdAt: Date.now(),
       schoolYear: activeTerm?.schoolYear || '',
       semester: activeTerm?.semester || '',
+    });
+
+    // Reach scholars who don't have the app open. Not awaited: the
+    // announcement is already saved, and a push failure must not look like a
+    // failure to post.
+    sendPush({
+      audience: { allActiveScholars: true },
+      title: data.isImportant ? `📢 ${data.title}` : data.title,
+      body: data.message,
+      data: { route: '/announcements' },
     });
   };
 
@@ -2202,6 +2237,25 @@ export function AppProvider({ children }) {
     );
     if (!result) return;
     syncApplicantToFirestore(result);
+
+    // Tell the scholar what the admin decided about the term just evaluated.
+    const decidedTerm = grantIfConfirmed
+      || Object.entries(gradesEvaluation || {})
+        .filter(([, ev]) => ev?.status === 'revision')
+        .map(([key]) => ({ schoolYear: key.split('::')[0], semester: key.split('::')[1] }))
+        .pop();
+    if (decidedTerm) {
+      const confirmed = !!grantIfConfirmed;
+      sendPush({
+        audience: { uids: [result.firestoreId || String(result.id)] },
+        title: confirmed ? 'Grades confirmed' : 'Grades need revision',
+        body: confirmed
+          ? `Your grades for ${decidedTerm.semester}, ${decidedTerm.schoolYear} have been confirmed.`
+          : `The office asked you to revise your grades for ${decidedTerm.semester}, ${decidedTerm.schoolYear}.`,
+        data: { route: '/grades' },
+      });
+    }
+
     logAudit({
       action: 'UPDATE',
       collection: 'users',
@@ -2363,6 +2417,7 @@ export function AppProvider({ children }) {
       prev.map((a) => {
         if (!toGraduate.some((g) => keyOf(g) === keyOf(a))) return a;
         const graduated = { ...a, status: 'graduated' };
+        pushScholarStatus(graduated, 'graduated', getActiveTerm());
         syncApplicantToFirestore(graduated);
         return graduated;
       })
@@ -2397,6 +2452,7 @@ export function AppProvider({ children }) {
         if (!reactivateKeys.has(keyOf(a))) return a;
         const restoredGrant = resolvePerSemGrant(a, catalogProgramsRef.current);
         const active = { ...a, status: 'active', amountGranted: restoredGrant };
+        pushScholarStatus(active, 'active', getActiveTerm());
         syncApplicantToFirestore(active);
         logAudit({
           action: 'UPDATE',
@@ -2471,6 +2527,7 @@ export function AppProvider({ children }) {
             terminationReason: `Exceeded absence limit (${totalAbsences} absences)`,
           }),
         };
+        if (totalAbsences > 2) pushScholarStatus(next, 'terminated', getActiveTerm());
         syncApplicantToFirestore(next);
         return next;
       })
@@ -2548,6 +2605,8 @@ export function AppProvider({ children }) {
             enrollmentStatus: null,
             enrollmentNotEnrolledReason: null,
           };
+          if (needsHold) pushScholarStatus(next, 'on-hold', outgoingTerm || getActiveTerm());
+          if (needsReactivate) pushScholarStatus(next, 'active', outgoingTerm || getActiveTerm());
           syncApplicantToFirestore(next);
           return next;
         })

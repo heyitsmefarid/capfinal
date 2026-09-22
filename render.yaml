@@ -47,6 +47,25 @@ services:
   # a week/month has elapsed since the last run — see scheduled-backup.js's
   # header comment for why "check daily" beats scheduling the exact cron
   # expression directly.
+  # Reminds scholars about tomorrow's events. On the cron rather than in the
+  # admin panel so it fires whether or not an admin has the panel open — the
+  # reminder has to be reliable, and attendance affects a scholar's standing.
+  - type: cron
+    name: iskonnect-event-reminders
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: backend/functions
+    buildCommand: npm ci
+    startCommand: node send-event-reminders.js
+    schedule: "0 1 * * *" # 09:00 Philippine time (UTC+8), the day before
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      # Same secret as the backup cron — set it in the Render dashboard.
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
+
   - type: cron
     name: iskonnect-scheduled-backup
     runtime: node

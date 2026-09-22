@@ -198,6 +198,23 @@ export async function bulkCreateScholars(rows) {
   });
 }
 
+// Sends a push notification to a scholar's phone, reaching them even with the
+// app closed. Best-effort by design: the caller's action (posting an
+// announcement, confirming grades) must succeed whether or not the push does,
+// and the server is only running locally in development.
+export async function sendPush({ audience, title, body, data }) {
+  try {
+    return await requestJson('/sendPush', {
+      method: 'POST',
+      headers: { 'x-admin-key': ADMIN_IMPORT_KEY },
+      body: { audience, title, body, data },
+    });
+  } catch (e) {
+    console.warn('Push notification not sent:', e?.message || e);
+    return null;
+  }
+}
+
 // Re-derives and resets a scholar's temp password (lastName + grantSchoolYear),
 // forcing a change again on next login. Returns { success, password }.
 export async function regenerateScholarPassword({ targetUid }) {

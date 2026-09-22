@@ -23,25 +23,37 @@ function fakeDb(activeYearDoc) {
 test('returns yearStart + semesterIndex 1 for an active 1st semester', async () => {
   const db = fakeDb({
     startYear: 2026,
+    label: '2026-2027',
     isActive: true,
     semesters: [
       { name: '1st Semester', order: 1, isActive: true },
       { name: '2nd Semester', order: 2, isActive: false },
     ],
   });
-  assert.deepEqual(await getCurrentSchoolYearAndSemester(db), { yearStart: 2026, semesterIndex: 1 });
+  // termKey matches the admin panel's countedTerms format, so push and import
+  // can both identify the running term.
+  assert.deepEqual(await getCurrentSchoolYearAndSemester(db), {
+    yearStart: 2026,
+    semesterIndex: 1,
+    termKey: '2026-2027::1st Semester',
+  });
 });
 
 test('returns semesterIndex 2 for an active 2nd semester', async () => {
   const db = fakeDb({
     startYear: 2026,
+    label: '2026-2027',
     isActive: true,
     semesters: [
       { name: '1st Semester', order: 1, isActive: false },
       { name: '2nd Semester', order: 2, isActive: true },
     ],
   });
-  assert.deepEqual(await getCurrentSchoolYearAndSemester(db), { yearStart: 2026, semesterIndex: 2 });
+  assert.deepEqual(await getCurrentSchoolYearAndSemester(db), {
+    yearStart: 2026,
+    semesterIndex: 2,
+    termKey: '2026-2027::2nd Semester',
+  });
 });
 
 test('returns null when no school year is marked active', async () => {

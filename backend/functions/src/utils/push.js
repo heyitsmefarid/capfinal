@@ -95,8 +95,26 @@ async function pruneTokens(deadByRef) {
  * Returns { targeted, sent, failed, pruned } — never throws for a partial
  * failure, so one stale device can't fail an announcement for everyone.
  */
-async function sendPush(db, messaging, { audience, title, body, data = {} }) {
+// Several admin-panel sweeps run in EVERY open tab, so the same status change
+// would otherwise be pushed once per tab. First caller to claim the key wins;
+// the rest are told the push was already sent.
+async function claimDedupeKey(db, dedupeKey) {
+  try {
+    await db.collection('push_dedupe').doc(String(dedupeKey)).create({
+      at: new Date().toISOString(),
+    });
+    return true;
+  } catch (_) {
+    return false; // already exists — someone else sent this
+  }
+}
+
+async function sendPush(db, messaging, { audience, title, body, data = {}, dedupeKey }) {
   if (!title || !body) throw new Error('title and body are required');
+
+  if (dedupeKey && !(await claimDedupeKey(db, dedupeKey))) {
+    return { targeted: 0, sent: 0, failed: 0, pruned: 0, duplicate: true };
+  }
 
   const byToken = await collectTargets(db, audience);
   const tokens = [...byToken.keys()];
@@ -117,7 +135,9 @@ async function sendPush(db, messaging, { audience, title, body, data = {} }) {
       data: payloadData,
       android: {
         priority: 'high',
-        notification: { channelId: 'iskonnect_default' },
+        // The channel the app already creates for local notifications, so a
+        // push lands with the same name, icon and importance.
+        notification: { channelId: 'announcements' },
       },
     });
 
@@ -143,6 +163,7 @@ module.exports = {
   ACTIVE_SCHOLAR_STATUSES,
   FCM_BATCH_LIMIT,
   tokensFromUserDoc,
+  claimDedupeKey,
   isActiveScholar,
   isDeadTokenError,
   chunk,

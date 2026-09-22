@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:iskonnectttt/core/models/student_model.dart';
 import 'package:iskonnectttt/core/constants/firebase_env.dart';
 import 'package:iskonnectttt/core/providers/session_reset.dart';
+import 'package:iskonnectttt/core/services/push_notification_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // Shared preferences keys
@@ -573,6 +574,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
       await _saveLoggedInUser(student.id);
       _listenToStudentDoc(student.id);
 
+      // Record this device so the office can reach the scholar with the app
+      // closed. Deliberately not awaited — a slow or refused permission must
+      // not hold up the login.
+      unawaited(PushNotificationService.registerDevice(student.id));
+
       // Discard any grades/attendance/messages/timeline left over from a
       // PREVIOUS scholar's session on this device — see resetPerStudentProviders.
       // Must run after _saveLoggedInUser above, since the providers it
@@ -712,6 +718,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
     } catch (_) {
       // Best-effort — a failed signOut must not block clearing local state.
     }
+
+    // Stop this device receiving the outgoing scholar's notifications — on a
+    // shared phone the next person would otherwise keep getting them.
+    final outgoingId = state.student?.id;
+    if (outgoingId != null) await PushNotificationService.unregisterDevice(outgoingId);
 
     // Clear login state from persistent storage
     await _saveLoggedInUser(null);

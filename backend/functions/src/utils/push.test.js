@@ -169,3 +169,67 @@ test('refuses to send a notification with no text', async () => {
     /title and body are required/
   );
 });
+
+test('the same status change pushed from three admin tabs only sends once', async () => {
+  const claimed = new Set();
+  const created = [];
+  const docsById = { u1: { role: 'scholar', adminStatus: 'on-hold', fcmTokens: { t: {} } } };
+  const db = {
+    collection: (name) => {
+      if (name === 'push_dedupe') {
+        return {
+          doc: (key) => ({
+            create: async () => {
+              if (claimed.has(key)) throw new Error('already exists');
+              claimed.add(key);
+              created.push(key);
+            },
+          }),
+        };
+      }
+      return {
+        doc: (id) => ({
+          get: async () => ({ exists: !!docsById[id], ref: { update: async () => {} }, data: () => docsById[id] }),
+        }),
+      };
+    },
+  };
+  let sends = 0;
+  const messaging = {
+    sendEachForMulticast: async (msg) => { sends += 1; return { responses: msg.tokens.map(() => ({ success: true })) }; },
+  };
+
+  const send = () => sendPush(db, messaging, {
+    audience: { uids: ['u1'] },
+    title: 'On hold',
+    body: 'Your scholarship is on hold',
+    dedupeKey: 'status:u1:on-hold:2026-2027::1st Semester',
+  });
+
+  const first = await send();
+  const second = await send();
+  const third = await send();
+
+  assert.equal(sends, 1, 'FCM should be called once, not once per tab');
+  assert.equal(first.sent, 1);
+  assert.equal(second.duplicate, true);
+  assert.equal(third.duplicate, true);
+  assert.deepEqual(created, ['status:u1:on-hold:2026-2027::1st Semester']);
+});
+
+test('a different term is a different push, not a duplicate', async () => {
+  const claimed = new Set();
+  const db = {
+    collection: (name) => (name === 'push_dedupe'
+      ? { doc: (key) => ({ create: async () => { if (claimed.has(key)) throw new Error('exists'); claimed.add(key); } }) }
+      : { doc: () => ({ get: async () => ({ exists: true, ref: { update: async () => {} }, data: () => ({ role: 'scholar', adminStatus: 'active', fcmTokens: { t: {} } }) }) }) }),
+  };
+  const messaging = { sendEachForMulticast: async (m) => ({ responses: m.tokens.map(() => ({ success: true })) }) };
+
+  const a = await sendPush(db, messaging, { audience: { uids: ['u1'] }, title: 'x', body: 'y', dedupeKey: 'status:u1:on-hold:2026-2027::1st Semester' });
+  const b = await sendPush(db, messaging, { audience: { uids: ['u1'] }, title: 'x', body: 'y', dedupeKey: 'status:u1:on-hold:2026-2027::2nd Semester' });
+
+  assert.equal(a.sent, 1);
+  assert.equal(b.sent, 1);
+  assert.equal(b.duplicate, undefined);
+});
