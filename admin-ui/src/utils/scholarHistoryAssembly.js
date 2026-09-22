@@ -129,8 +129,10 @@ export function assembleScholarHistory(row, blocks) {
     const { subjects, errors: subjectErrors } = parseSubjectCell(subjectsCell);
     for (const message of subjectErrors) errors.push(`${block.prefix} Subjects, ${message}`);
 
-    const onHold = statusCell.toLowerCase().includes('hold');
+    // A withheld term is recorded by its ₱0 amount, so the template carries no
+    // Status column. An older sheet that still has one is still honoured.
     const amount = Number(amountCell || 0);
+    const onHold = statusCell.toLowerCase().includes('hold') || !(Number.isFinite(amount) && amount > 0);
 
     if (subjects.length > 0) {
       grades.push({ schoolYear, semester, subjects, gwa: computeGwa(subjects) });

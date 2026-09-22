@@ -31,20 +31,15 @@ export const TEMPLATE_PROFILE_COLUMNS = [
 export function buildTemplateHeader(blocks = TEMPLATE_SEMESTER_BLOCKS) {
   const header = [...TEMPLATE_PROFILE_COLUMNS];
   for (let n = 1; n <= blocks; n += 1) {
-    header.push(
-      `SY${n} School Year`,
-      `SY${n} Semester`,
-      `SY${n} Subjects`,
-      `SY${n} Amount Granted`,
-      `SY${n} Status`
-    );
+    // No Status column: a withheld term is recorded by a ₱0 Amount Granted.
+    header.push(`SY${n} School Year`, `SY${n} Semester`, `SY${n} Subjects`, `SY${n} Amount Granted`);
   }
   return header;
 }
 
 // One worked scholar the staff type over: two granted semesters, so the packed
-// subject format and the Semesters Granted count are both visible. Per-term
-// Status is left blank, which already means Disbursed — only On Hold is typed.
+// subject format and the Semesters Granted count are both visible. A term the
+// scholar was on hold for is entered with an Amount Granted of 0.
 export function buildTemplateSampleRow(blocks = TEMPLATE_SEMESTER_BLOCKS) {
   const row = {};
   for (const key of buildTemplateHeader(blocks)) row[key] = '';

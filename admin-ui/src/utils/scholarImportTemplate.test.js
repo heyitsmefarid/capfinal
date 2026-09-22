@@ -10,12 +10,16 @@ import { validateImportRows } from './scholarImportValidation.js';
 
 const noExisting = { existingEmails: new Set(), existingScholarIds: new Set() };
 
-test('the header is 17 profile columns plus 5 per semester block', () => {
+test('the header is 17 profile columns plus 4 per semester block', () => {
   const header = buildTemplateHeader();
-  assert.equal(header.length, 17 + TEMPLATE_SEMESTER_BLOCKS * 5);
+  assert.equal(header.length, 17 + TEMPLATE_SEMESTER_BLOCKS * 4);
   assert.equal(header[0], 'Scholar ID');
   assert.ok(header.includes('Semesters Granted'));
   assert.ok(!header.some((h) => /password/i.test(h)), 'the template must never carry a password column');
+  assert.ok(
+    !header.some((h) => /^SY\d+ Status$/.test(h)),
+    'per-term Status is gone — a withheld term is recorded by a 0 amount'
+  );
 });
 
 test('every block the header declares is discovered by the parser', () => {
@@ -23,7 +27,7 @@ test('every block the header declares is discovered by the parser', () => {
   assert.equal(blocks.length, TEMPLATE_SEMESTER_BLOCKS);
   const header = new Set(buildTemplateHeader());
   for (const b of blocks) {
-    for (const key of [b.yearKey, b.semesterKey, b.subjectsKey, b.amountKey, b.statusKey]) {
+    for (const key of [b.yearKey, b.semesterKey, b.subjectsKey, b.amountKey]) {
       assert.ok(header.has(key), `${key} is missing from the template header`);
     }
   }
