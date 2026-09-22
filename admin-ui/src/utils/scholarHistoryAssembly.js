@@ -68,8 +68,12 @@ export function parseSubjectCell(cell) {
       }
     }
 
-    const remarks = remarksRaw || 'Passed';
-    if (!VALID_REMARKS.includes(remarks)) {
+    // A gradeless subject (the two-field form) is pending, not Passed — only
+    // an explicit grade earns the 'Passed' default. isPendingSubject() in
+    // academicRecords.js requires remarks === '', so defaulting a gradeless
+    // subject to 'Passed' here would silently count it as Passed there.
+    const remarks = remarksRaw || (grade === null ? '' : 'Passed');
+    if (remarks !== '' && !VALID_REMARKS.includes(remarks)) {
       errors.push(`${label} (${name}) — Remarks must be one of ${VALID_REMARKS.join(', ')}`);
       return;
     }

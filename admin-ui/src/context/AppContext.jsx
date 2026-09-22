@@ -364,6 +364,11 @@ const mapStudentToApplicant = (student) => {
     // Why the admin marked the scholar as not enrolled, when enrollmentStatus
     // is 'Not Enrolled'.
     enrollmentNotEnrolledReason: student.enrollmentNotEnrolledReason ?? null,
+    // Provenance stamps written by the bulk migration import (see
+    // scholarImport.js) — read-only here, used to exclude migrated scholars'
+    // authoritative history from one-time data-fix effects below.
+    source: student.source ?? null,
+    createdBy: student.createdBy ?? null,
   };
 };
 
@@ -2260,6 +2265,12 @@ export function AppProvider({ children }) {
       [...enrolled].sort((x, y) => String(x.enrolledAt || '').localeCompare(String(y.enrolledAt || '')))[0];
 
     const toFix = applicants.filter((a) => {
+      // Migrated scholars' history is authoritative (assembled from the legacy
+      // sheet, not a live artifact of the pre-verification-gating bug this
+      // effect targets) — backfilling a phantom term here would fabricate a
+      // grant the imported sheet never had. See scholarImport.js's
+      // source/createdBy stamps.
+      if (a.source === 'bulkImport' || a.createdBy === 'bulk-import') return false;
       const enrolled = Array.isArray(a.enrolledSemesters) ? a.enrolledSemesters : [];
       if (enrolled.length === 0) return false;
       const earliest = earliestOf(enrolled);

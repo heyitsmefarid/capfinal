@@ -148,3 +148,36 @@ test('a row with no semester blocks still validates (legacy file)', () => {
   assert.deepEqual(result.errors, []);
   assert.equal(result.history, null);
 });
+
+test('blocks a new-template row that declares semesters but fills no blocks', () => {
+  // The sheet has SY* columns (it's the new migration template), but every
+  // block is left blank — Semesters Granted still claims 2 disbursed terms.
+  const row = {
+    ...baseRow,
+    'Semesters Granted': '2',
+    'SY1 School Year': '', 'SY1 Semester': '', 'SY1 Subjects': '', 'SY1 Amount Granted': '', 'SY1 Status': '',
+    'SY2 School Year': '', 'SY2 Semester': '', 'SY2 Subjects': '', 'SY2 Amount Granted': '', 'SY2 Status': '',
+  };
+  const [result] = validateImportRows([row], noExisting);
+  assert.ok(result.errors.some((e) => /Semesters Granted \(2\) does not match/.test(e)));
+  assert.equal(result.valid, false);
+  assert.equal(result.history, null);
+});
+
+test('flags a non-integer Year Level', () => {
+  const row = { ...baseRow, 'Year Level': 'abc' };
+  const [result] = validateImportRows([row], noExisting);
+  assert.ok(result.errors.includes('Year Level must be a positive integer'));
+});
+
+test('flags a zero or negative Year Level', () => {
+  const row = { ...baseRow, 'Year Level': '0' };
+  const [result] = validateImportRows([row], noExisting);
+  assert.ok(result.errors.includes('Year Level must be a positive integer'));
+});
+
+test('flags a non-numeric Total Scholarship Semesters', () => {
+  const row = { ...baseRow, 'Total Scholarship Semesters': 'eight' };
+  const [result] = validateImportRows([row], noExisting);
+  assert.ok(result.errors.includes('Total Scholarship Semesters must be a number'));
+});

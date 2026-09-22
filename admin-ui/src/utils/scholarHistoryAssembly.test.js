@@ -44,7 +44,7 @@ test('defaults remarks to Passed when omitted', () => {
 test('treats a two-field subject as pending (no grade)', () => {
   const { subjects, errors } = parseSubjectCell('Thesis|3');
   assert.deepEqual(errors, []);
-  assert.deepEqual(subjects, [{ name: 'Thesis', units: 3, grade: null, remarks: 'Passed' }]);
+  assert.deepEqual(subjects, [{ name: 'Thesis', units: 3, grade: null, remarks: '' }]);
 });
 
 test('trims whitespace and ignores a trailing semicolon', () => {

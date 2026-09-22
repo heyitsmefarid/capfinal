@@ -201,7 +201,7 @@ exports.bulkCreateScholars = onRequest(
             academicProgram: pick(row, 'Program', 'Course', 'Academic Program'),
             academicYear,
             yearLevel,
-            semester: '1st Semester',
+            semester: history?.derived?.latestSemester || '1st Semester',
             studentType: 'scholar',
             role: ROLES.SCHOLAR,
             scholarshipStatus,

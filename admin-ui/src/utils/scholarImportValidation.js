@@ -70,7 +70,9 @@ export function validateImportRows(rows, { existingEmails, existingScholarIds })
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('Invalid email format');
     if (!readCell(row, 'School')) errors.push('Missing School');
     if (!readCell(row, 'Program')) errors.push('Missing Program');
-    if (!readCell(row, 'Year Level')) errors.push('Missing Year Level');
+    const yearLevel = readCell(row, 'Year Level');
+    if (!yearLevel) errors.push('Missing Year Level');
+    else if (!/^\d+$/.test(yearLevel) || Number(yearLevel) < 1) errors.push('Year Level must be a positive integer');
 
     const dateOfBirth = readCell(row, 'Date of Birth');
     if (dateOfBirth && Number.isNaN(new Date(dateOfBirth).getTime())) {
@@ -82,7 +84,9 @@ export function validateImportRows(rows, { existingEmails, existingScholarIds })
     if (!Number.isFinite(semestersGranted) || semestersGranted < 1) {
       errors.push('Semesters Granted must be at least 1');
     }
-    if (totalSemesters < semestersGranted) {
+    if (!Number.isFinite(totalSemesters)) {
+      errors.push('Total Scholarship Semesters must be a number');
+    } else if (totalSemesters < semestersGranted) {
       errors.push('Total Scholarship Semesters must be >= Semesters Granted');
     }
 
@@ -100,17 +104,21 @@ export function validateImportRows(rows, { existingEmails, existingScholarIds })
 
     let history = null;
     if (blocks.length > 0) {
+      // The sheet IS the new migration template (it has SY* columns at all),
+      // so the cross-check runs even when every block was left blank —
+      // otherwise a row that declares "Semesters Granted: 4" but fills no
+      // history imports silently with counts and no history. A genuine
+      // legacy sheet has no SY* columns (blocks.length === 0) and skips this
+      // whole branch, so it still imports with history: null and no error.
       const assembled = assembleScholarHistory(row, blocks);
       errors.push(...assembled.errors);
-      if (assembled.enrolledSemesters.length > 0) {
-        history = assembled;
-        // Cross-check against the row's own declared count. validateBlocks already
-        // catches a filled block with a blank amount, so no per-term check belongs here.
-        if (Number.isFinite(semestersGranted) && assembled.derived.semestersUsed !== semestersGranted) {
-          errors.push(
-            `Semesters Granted (${semestersGranted}) does not match the ${assembled.derived.semestersUsed} disbursed semester block(s) filled in`
-          );
-        }
+      if (assembled.enrolledSemesters.length > 0) history = assembled;
+      // Cross-check against the row's own declared count. validateBlocks already
+      // catches a filled block with a blank amount, so no per-term check belongs here.
+      if (Number.isFinite(semestersGranted) && assembled.derived.semestersUsed !== semestersGranted) {
+        errors.push(
+          `Semesters Granted (${semestersGranted}) does not match the ${assembled.derived.semestersUsed} disbursed semester block(s) filled in`
+        );
       }
     }
 
