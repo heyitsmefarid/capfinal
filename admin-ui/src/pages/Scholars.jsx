@@ -887,14 +887,24 @@ export default function Scholars() {
       const previewHtml = `
         <div style="max-height:300px;overflow:auto;text-align:left;font-size:0.85em">
           <table style="width:100%;border-collapse:collapse">
-            <thead><tr><th>Row</th><th>Name</th><th>Status</th></tr></thead>
+            <thead><tr><th>Row</th><th>Name</th><th>History</th><th>Status</th></tr></thead>
             <tbody>
-              ${validated.map((r) => `
+              ${validated.map((r) => {
+                const h = r.history;
+                const terms = h ? h.enrolledSemesters.length : 0;
+                const subjects = h ? h.grades.reduce((n, g) => n + g.subjects.length, 0) : 0;
+                const total = h ? h.enrolledSemesters.reduce((n, e) => n + e.grantedAmount, 0) : 0;
+                const historyLabel = terms
+                  ? `${terms} term(s) · ${subjects} subject(s) · ₱${total.toLocaleString()}`
+                  : 'no history';
+                return `
                 <tr style="color:${r.valid ? (r.warnings.length ? '#b8860b' : '#2e7d32') : '#c62828'}">
                   <td>${r.index + 1}</td>
                   <td>${escapeHtml(r.row['First Name'])} ${escapeHtml(r.row['Last Name'])}</td>
+                  <td>${escapeHtml(historyLabel)}</td>
                   <td>${escapeHtml(r.errors.concat(r.warnings).join('; ')) || 'OK'}</td>
-                </tr>`).join('')}
+                </tr>`;
+              }).join('')}
             </tbody>
           </table>
         </div>`;
@@ -909,7 +919,11 @@ export default function Scholars() {
       });
       if (!confirm.isConfirmed || okRows.length === 0) return;
 
-      const importRows = okRows.map((r) => r.row);
+      const importRows = okRows.map((r) =>
+        r.history
+          ? { ...r.row, __history: { grades: r.history.grades, enrolledSemesters: r.history.enrolledSemesters, derived: r.history.derived } }
+          : r.row
+      );
 
       // Send in chunks so a large migration never hits the function timeout,
       // and the admin sees live progress.
