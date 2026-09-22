@@ -195,12 +195,17 @@ List<ScholarshipDisbursement>? mapEnrolledSemestersToDisbursements(
   final mapped = <ScholarshipDisbursement>[];
   for (var i = 0; i < list.length; i++) {
     final e = list[i];
-    final sy = startYear + (i ~/ 2); // new school year every 2 semesters
+    // Each grant records its own term; position-based labels are only a
+    // fallback for entries that predate those fields. Guessing by position
+    // mislabels any history that starts in a 2nd Semester or skips a term.
+    final sy = startYear + (i ~/ 2);
     final isFirstSem = i.isEven;
+    final schoolYear = e['schoolYear']?.toString() ?? '$sy-${sy + 1}';
+    final semester = e['semester']?.toString() ?? (isFirstSem ? '1st Semester' : '2nd Semester');
     mapped.add(ScholarshipDisbursement(
-      id: '$sy-${isFirstSem ? 1 : 2}',
-      semester: isFirstSem ? '1st Semester' : '2nd Semester',
-      academicYear: '$sy-${sy + 1}',
+      id: '$schoolYear::$semester',
+      semester: semester,
+      academicYear: schoolYear,
       amount: (e['grantedAmount'] ?? 0).toDouble(),
       disbursedDate: ScholarFirestoreService.parseDateTime(e['enrolledAt']),
       status: e['status']?.toString() ?? 'disbursed',

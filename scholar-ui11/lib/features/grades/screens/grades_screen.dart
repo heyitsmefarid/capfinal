@@ -1070,7 +1070,7 @@ class _SubjectCard extends ConsumerWidget {
       text: grade.grade != null ? grade.grade!.toString() : '',
     );
     int selectedUnits = grade.units;
-    const remarksOptions = ['Passed', 'Failed', 'Incomplete', 'Other'];
+    const remarksOptions = ['Passed', 'Failed'];
     String selectedRemarks = remarksOptions.contains(grade.remarks)
         ? grade.remarks!
         : remarksOptions.first;

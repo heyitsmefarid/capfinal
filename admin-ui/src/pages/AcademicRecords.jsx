@@ -935,8 +935,6 @@ export default function AcademicRecords() {
                                                 >
                                                   <option value="Passed">Passed</option>
                                                   <option value="Failed">Failed</option>
-                                                  <option value="Incomplete">Incomplete</option>
-                                                  <option value="Other">Other</option>
                                                 </select>
                                               </td>
                                               <td style={{ textAlign: 'center' }}>
@@ -1191,8 +1189,6 @@ export default function AcademicRecords() {
                     <select value={gradeForm.remarks} onChange={(e) => setGradeForm({ ...gradeForm, remarks: e.target.value })}>
                       <option value="Passed">Passed</option>
                       <option value="Failed">Failed</option>
-                      <option value="Incomplete">Incomplete</option>
-                      <option value="Other">Other</option>
                     </select>
                   </div>
                   <button type="submit" className="btn btn-primary">Add</button>

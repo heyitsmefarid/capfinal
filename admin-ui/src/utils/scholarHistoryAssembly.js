@@ -5,7 +5,7 @@
 
 import { computeGwa } from './academicRecords.js';
 
-export const VALID_REMARKS = ['Passed', 'Failed', 'Incomplete', 'Other'];
+export const VALID_REMARKS = ['Passed', 'Failed'];
 
 // Blocks are discovered from the header rather than hardcoded, so an admin who
 // hand-adds an 8th semester block to the template imports it correctly.

@@ -168,8 +168,18 @@ class StudentModel {
     return parts.join(' ');
   }
 
+  /// Blank parts are skipped (migrated scholars have no house number, city or
+  /// province), and "Brgy." isn't added to a barangay already written with it.
   String get fullAddress {
-    return '$houseNo $street, Brgy. $barangay, $city, $province';
+    final streetLine =
+        [houseNo, street].map((p) => p.trim()).where((p) => p.isNotEmpty).join(' ');
+    final b = barangay.trim();
+    final barangayPart = b.isEmpty || RegExp(r'^(brgy\.?|barangay)\s', caseSensitive: false).hasMatch(b)
+        ? b
+        : 'Brgy. $b';
+    return [streetLine, barangayPart, city.trim(), province.trim()]
+        .where((p) => p.isNotEmpty)
+        .join(', ');
   }
 
   /// Barangay and city only — the form used on the ID card.

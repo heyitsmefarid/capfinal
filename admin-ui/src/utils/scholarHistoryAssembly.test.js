@@ -184,3 +184,9 @@ test('sorts terms chronologically even when the blocks are filled out of order',
   assert.equal(derived.grantSchoolYear, '2023-2024');
   assert.equal(derived.yearAwarded, 2023);
 });
+
+test('rejects Incomplete and Other remarks — only Passed and Failed are allowed', () => {
+  assert.match(parseSubjectCell('Math|3|3.00|Incomplete').errors[0], /Remarks must be one of Passed, Failed/);
+  assert.match(parseSubjectCell('Math|3|3.00|Other').errors[0], /Remarks must be one of Passed, Failed/);
+  assert.deepEqual(parseSubjectCell('Math|3|5.00|Failed').errors, []);
+});
