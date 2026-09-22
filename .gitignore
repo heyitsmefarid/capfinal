@@ -43,3 +43,6 @@ php-otp/otp_data/
 .claude/scheduled_tasks.lock
 .claude/*.lock
 .superpowers/
+
+# Database backups taken before a wipe — contain scholar personal data
+backups/
