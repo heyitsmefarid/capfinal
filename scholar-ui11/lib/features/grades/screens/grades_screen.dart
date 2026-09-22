@@ -1048,14 +1048,13 @@ SubjectActionButtonStyle subjectActionButtonStyle(GradeModel grade) {
 
 class _SubjectCard extends ConsumerWidget {
   final GradeModel grade;
-  final bool showGrade;
   // Once the admin has confirmed this semester's grades, the scholar can no
-  // longer edit individual subjects — confirmed grades are final.
+  // longer edit individual subjects — confirmed grades are final. The grade
+  // itself stays visible either way.
   final bool locked;
 
   const _SubjectCard({
     required this.grade,
-    this.showGrade = false,
     this.locked = false,
   });
 
@@ -1260,7 +1259,7 @@ class _SubjectCard extends ConsumerWidget {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              gradient: showGrade && grade.isGraded
+              gradient: grade.isGraded
                   ? LinearGradient(
                       colors: [
                         _getGradeColor(),
@@ -1271,7 +1270,7 @@ class _SubjectCard extends ConsumerWidget {
               borderRadius: BorderRadius.circular(10),
             ),
             child: Center(
-              child: showGrade && grade.isGraded
+              child: grade.isGraded
                   ? Text(
                       grade.gradeDisplay,
                       style: const TextStyle(
@@ -1304,7 +1303,7 @@ class _SubjectCard extends ConsumerWidget {
                         style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
-                          color: showGrade
+                          color: grade.isGraded
                               ? _getGradeColor()
                               : AppColors.primary,
                         ),
@@ -1342,23 +1341,19 @@ class _SubjectCard extends ConsumerWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                if (!showGrade) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    '${grade.semester}, A.Y. ${grade.academicYear}',
-                    style: const TextStyle(
-                      fontSize: 10,
-                      color: AppColors.textTertiary,
-                    ),
+                const SizedBox(height: 2),
+                Text(
+                  '${grade.semester}, A.Y. ${grade.academicYear}',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: AppColors.textTertiary,
                   ),
-                ],
+                ),
               ],
             ),
           ),
           // Grade Status
-          if (showGrade)
-            const SizedBox.shrink()
-          else if (locked)
+          if (locked)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: Tooltip(
