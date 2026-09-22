@@ -19,6 +19,12 @@
 const http = require('http');
 const { fillBfcspForm } = require('./src/utils/bfcspForm');
 const { bulkCreateScholarsHandler } = require('./src/http/scholarImport');
+const { getFirebaseAdmin } = require('./src/config/firebase');
+const { sendPush } = require('./src/utils/push');
+
+// Same shared secret the scholar import uses: the admin panel is anonymous to
+// Firebase, so it can't present an admin token.
+const ADMIN_KEY = process.env.ADMIN_IMPORT_KEY || 'ced-admin-import-2026';
 
 // The scholar import writes to Firestore and creates Auth accounts, so unlike
 // the PDF route it needs admin credentials: set GOOGLE_APPLICATION_CREDENTIALS
@@ -74,6 +80,45 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ status: 'ok', service: 'bfcsp-form-server' }));
   }
 
+  // Push notifications. Cloud Functions can't deploy on the Spark plan, so the
+  // admin panel calls this instead when something happens a scholar should know
+  // about. Needs GOOGLE_APPLICATION_CREDENTIALS, like the import route.
+  if (req.method === 'POST' && req.url.includes('sendPush')) {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 1_000_000) req.destroy();
+    });
+    req.on('end', async () => {
+      const respond = (code, payload) => {
+        res.writeHead(code, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      };
+      if (req.headers['x-admin-key'] !== ADMIN_KEY) return respond(401, { error: 'Unauthorized.' });
+
+      let parsed;
+      try {
+        parsed = body ? JSON.parse(body) : {};
+      } catch (_) {
+        return respond(400, { error: 'Invalid JSON body' });
+      }
+
+      if (!parsed.title || !parsed.body) return respond(400, { error: 'title and body are required' });
+      if (!parsed.audience) return respond(400, { error: 'audience is required' });
+
+      try {
+        const { db, admin } = getFirebaseAdmin();
+        const result = await sendPush(db, admin.messaging(), parsed);
+        console.log(`sendPush "${parsed.title}" → ${result.sent}/${result.targeted} sent, ${result.failed} failed, ${result.pruned} pruned`);
+        return respond(200, result);
+      } catch (e) {
+        console.error('sendPush failed:', e.message);
+        return respond(500, { error: e.message || 'Push failed' });
+      }
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url.includes('bulkCreateScholars')) {
     let body = '';
     req.on('data', (chunk) => {
@@ -124,5 +169,6 @@ server.listen(PORT, () => {
   console.log(`BFCSP form server listening on port ${PORT}`);
   console.log('  POST /generateApplicationForm  → filled application PDF');
   console.log('  POST /bulkCreateScholars       → scholar import (needs GOOGLE_APPLICATION_CREDENTIALS)');
+  console.log('  POST /sendPush                 → push notification to scholars');
   console.log('  GET  /                         → health check');
 });

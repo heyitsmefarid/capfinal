@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "899384638137",
+    "project_id": "iskonnect-15238",
+    "storage_bucket": "iskonnect-15238.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:899384638137:android:26648629a2e212c73af968",
+        "android_client_info": {
+          "package_name": "com.example.iskonek"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCJtsuRSeIeqdPbjJTijzkeVNXxuIQau1E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:899384638137:android:18583348d944a0b23af968",
+        "android_client_info": {
+          "package_name": "ph.gov.calapan.ced.iskonnect"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCJtsuRSeIeqdPbjJTijzkeVNXxuIQau1E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
