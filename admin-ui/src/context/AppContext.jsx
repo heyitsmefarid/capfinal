@@ -2117,10 +2117,44 @@ export function AppProvider({ children }) {
           verifiedAt: todayISO(),
         },
       },
+      // Mirror the outcome into the scholar-owned `requirements` map too, for
+      // this component's own in-memory view: the scholar app only ever reads
+      // status/reviewNotes from `requirements`, it never reads
+      // `requirementsVerification` (see the comment above
+      // mapStudentToApplicant's requirementsVerification field). Only these two
+      // display fields are touched — `submitted`/`fileUrl`/`fileName` stay
+      // exactly as the scholar wrote them, so isSubmittedValue/toRequirementRecord
+      // above and a later re-upload both keep working exactly as before.
+      // NOTE: buildUserDocFromApplicant deliberately never writes `requirements`
+      // back to Firestore (also scholar-owned), so this in-memory copy alone
+      // would not persist — the dotted-path updateDoc below is what actually
+      // saves it.
+      requirements: record
+        ? {
+            ...(target.requirements || {}),
+            [key]: {
+              ...record,
+              status: entry ? entry.status : 'submitted',
+              reviewNotes: entry ? (entry.rejectionReason || null) : null,
+            },
+          }
+        : target.requirements,
     };
     if (!entry) delete next.requirementsVerification[key];
     setApplicants((prev) => prev.map((a) => (a.id === id ? next : a)));
     syncApplicantToFirestore(next);
+    // Persist the scholar-facing mirror directly: a dotted-path update touches
+    // only `requirements.{key}.status`/`.reviewNotes`, leaving every other field
+    // on that requirement (and every other requirement) untouched.
+    if (target.firestoreId && record) {
+      const { db, isReady } = initializeFirebase();
+      if (isReady && db) {
+        updateDoc(doc(db, 'users', target.firestoreId), {
+          [`requirements.${key}.status`]: entry ? entry.status : 'submitted',
+          [`requirements.${key}.reviewNotes`]: entry ? (entry.rejectionReason || null) : null,
+        }).catch(() => {});
+      }
+    }
     return next;
   };
 
