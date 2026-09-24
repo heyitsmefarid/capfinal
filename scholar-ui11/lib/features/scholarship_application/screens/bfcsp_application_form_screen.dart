@@ -471,6 +471,18 @@ class _BfcspApplicationFormScreenState extends ConsumerState<BfcspApplicationFor
   }
 
   Future<void> _submitApplication() async {
+    // The essay (step 5's form) already carries a required-length validator
+    // (see _buildStep5) — it just was never actually invoked before this
+    // point, so an empty essay could reach Firestore untouched. Validating
+    // here blocks that, and shows the same inline error Next/Back already
+    // rely on elsewhere in this form.
+    if (_formKeys[4].currentState?.validate() != true) {
+      _showSnack(
+        'Please write your essay before submitting — it is required.',
+        error: true,
+      );
+      return;
+    }
     _syncToModel();
     final confirmed = await _showConfirmDialog(
       'Submit Application',

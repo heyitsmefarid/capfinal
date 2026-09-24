@@ -9,6 +9,17 @@ import { formatPersonName } from '../../utils/nameFormat';
 import { rubricMaxPoints, rubricColor, scorePercentage } from '../../utils/evaluationRubric';
 import { promptScore, promptRubricLevel } from '../../utils/scoreDialogs';
 import { getApprovalEligibility } from '../../utils/applicantEligibility';
+import { fetchBfcspApplication } from '../../services/scholarshipApplications';
+import { generateApplicationFormPdf } from '../../services/backendApi';
+import { downloadBfcspFormPdf } from '../../utils/bfcspApplicationForm';
+
+// The "Duly Accomplished Scholarship Application Form" requirement is filled
+// out as an in-app form (BfcspApplicationFormScreen), not an uploaded
+// document — it never has a fileUrl, by design. "Viewing" it means opening
+// the same official PDF the scholar app and the Applications.jsx download
+// button already generate from the applicant's real `scholarship_applications`
+// record, not a fabricated file.
+const APPLICATION_FORM_REQUIREMENT_KEY = 'applicationForm';
 
 const SCORE_COLOR = (score, max) => {
   const pct = max > 0 ? score / max : 0;
@@ -52,6 +63,45 @@ export default function RequirementsReviewModal({
   // Download link appears — "view before download", not just visual ordering
   // (same rule the old View-modal requirements section used).
   const [viewedKeys, setViewedKeys] = useState(() => new Set());
+  const [loadingApplicationForm, setLoadingApplicationForm] = useState(false);
+
+  // Opens the applicant's actual submitted application form — the same
+  // official PDF Applications.jsx's "Download Form" button generates from
+  // their real `scholarship_applications` record (fetchBfcspApplication),
+  // just opened for viewing instead of forced to download. No fake file is
+  // created; if the applicant has no record on file, this says so.
+  const handleViewApplicationForm = async () => {
+    setLoadingApplicationForm(true);
+    try {
+      const fullRecord = await fetchBfcspApplication(applicant);
+      if (!fullRecord) {
+        Swal.fire({
+          icon: 'info',
+          title: 'Application Form Not Found',
+          text: "This applicant's submitted application form record could not be found.",
+        });
+        return;
+      }
+      const merged = { ...applicant, ...fullRecord };
+      const blob = await generateApplicationFormPdf(merged);
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank', 'noopener,noreferrer');
+      } else {
+        // Backend generator unreachable — fall back to the same client-side
+        // generator Applications.jsx's download button falls back to.
+        await downloadBfcspFormPdf(merged);
+      }
+    } catch (error) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Could Not Open Form',
+        text: error.message || 'Unable to load the application form.',
+      });
+    } finally {
+      setLoadingApplicationForm(false);
+    }
+  };
 
   const REQUIREMENTS_RUBRIC = evaluationRubric.requirementsRubric;
   const ECONOMIC_RUBRIC = evaluationRubric.economicRubric;
@@ -248,6 +298,32 @@ export default function RequirementsReviewModal({
                                 View to unlock download
                               </span>
                             )}
+                            {verification === 'verified' ? (
+                              <button type="button" className="btn btn-sm btn-secondary" onClick={handleReverify}>
+                                Verified — Re-verify?
+                              </button>
+                            ) : (
+                              <>
+                                <button type="button" className="btn btn-sm btn-success" onClick={handleVerify}>
+                                  Verify
+                                </button>
+                                <button type="button" className="btn btn-sm btn-danger" onClick={handleReject}>
+                                  Reject
+                                </button>
+                              </>
+                            )}
+                          </>
+                        ) : requirement.key === APPLICATION_FORM_REQUIREMENT_KEY && rec ? (
+                          <>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-secondary"
+                              style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+                              onClick={handleViewApplicationForm}
+                              disabled={loadingApplicationForm}
+                            >
+                              <Eye size={14} /> {loadingApplicationForm ? 'Opening…' : 'View Application Form'}
+                            </button>
                             {verification === 'verified' ? (
                               <button type="button" className="btn btn-sm btn-secondary" onClick={handleReverify}>
                                 Verified — Re-verify?
