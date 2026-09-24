@@ -30,6 +30,16 @@ import * as XLSX from 'xlsx';
 import { saveAs } from 'file-saver';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  Legend as RechartsLegend,
+  ResponsiveContainer,
+} from 'recharts';
 import { loadLetterheadImages, getLetterheadLayout, drawLetterheadBands } from '../utils/reportLetterhead';
 import { matchesExact } from '../utils/filtering';
 import { fetchReportSummary } from '../services/backendApi';
@@ -67,6 +77,11 @@ const REPORT_CATEGORIES = {
 // bold styling of subtotal/TOTAL rows.
 const INTERNAL_ROW_KEYS = new Set(['_rowType']);
 const visibleHeaders = (row) => Object.keys(row || {}).filter((k) => !INTERNAL_ROW_KEYS.has(k));
+
+// Same palette Dashboard.jsx's charts already use, reused here for the
+// Year-to-Year Program Comparison chart so both pages' charts read as one
+// visual system rather than introducing a second color scheme.
+const BAR_COLORS = ['#2d9596', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#22c55e'];
 
 // Appends a TOTAL row to a flat list of report rows — every report must show
 // one (requirement #3/#17). `fill` supplies values for whichever columns a
@@ -546,6 +561,14 @@ export default function Reports() {
       icon: TrendingUp,
       description: 'Strategic planning and trend analysis',
       fields: ['Academic Year', 'Total Scholars', 'Total Budget', 'New Scholars Added', 'Graduates'],
+    },
+    {
+      id: 'year-to-year-program-comparison',
+      name: 'Year-to-Year Program Comparison',
+      category: REPORT_CATEGORIES.ANALYTICAL,
+      icon: TrendingUp,
+      description: 'Compare scholar counts per program across school years',
+      fields: ['School Year', 'Program', 'Number of Scholars'],
     },
   ];
 
@@ -1353,6 +1376,97 @@ export default function Reports() {
     });
   };
 
+  // Year-to-Year Program Comparison — shared aggregation for both the flat
+  // table below and its chart. A scholar counts once per school year even if
+  // they have multiple enrolled semesters that year (via the Set), so this is
+  // a headcount-per-year view, not a semester-disbursement ledger (see
+  // generateDisbursementPerSemester for that).
+  //
+  // School year comes from each scholar's real per-term history
+  // (scholarGrantBreakdown/enrolledSemesters — the same source
+  // generateDisbursementPerSemester/PerScholar already use), not the flat
+  // registration-time `schoolYear` field, so this reflects years actually
+  // enrolled. A scholar with no enrolled-semester history yet (approved but
+  // not yet enrolled into a term) falls back to their registration-time
+  // schoolYear, matching matchesAcademicTerm's own fallback elsewhere in this
+  // file.
+  //
+  // Program is the scholar's raw stored `program` value — deliberately NOT
+  // passed through getProgramDisplayLabel, since that field already holds the
+  // full program name; abbreviating it here would defeat the "use full
+  // program names" requirement this report was built for.
+  //
+  // Known limitation: enrolledSemesters does not record which program a
+  // scholar was in during each historical term, only the doc's current
+  // `program` — so a scholar who switched programs appears under their
+  // CURRENT program for every year shown, including past ones. This is the
+  // same accepted tradeoff generateDisbursementPerSemester/PerScholar already
+  // make; there is no per-term program field in the data model to do better.
+  const yearToYearProgramCounts = () => {
+    const scholars = getFilteredScholars();
+    const countsByYear = new Map(); // schoolYear -> Map(program -> Set(scholarId))
+    scholars.forEach((s) => {
+      const programName = s.program || 'Unspecified Program';
+      const { semesterRows } = scholarGrantBreakdown(s);
+      const years = new Set(semesterRows.map((row) => row.schoolYear).filter(Boolean));
+      if (years.size === 0 && s.schoolYear) years.add(s.schoolYear);
+      years.forEach((year) => {
+        if (!countsByYear.has(year)) countsByYear.set(year, new Map());
+        const programMap = countsByYear.get(year);
+        const set = programMap.get(programName) || new Set();
+        set.add(s.id);
+        programMap.set(programName, set);
+      });
+    });
+
+    const years = Array.from(new Set([...academicYearOptions, ...countsByYear.keys()])).sort((a, b) => a.localeCompare(b));
+    const programsSeen = Array.from(countsByYear.values()).flatMap((m) => Array.from(m.keys()));
+    const programs = filterProgram
+      ? [filterProgram]
+      : Array.from(new Set([...programOptions, ...programsSeen])).sort((a, b) => a.localeCompare(b));
+
+    return { countsByYear, years, programs };
+  };
+
+  const generateYearToYearProgramComparison = () => {
+    const { countsByYear, years, programs } = yearToYearProgramCounts();
+    const rows = [];
+    years.forEach((year) => {
+      const programMap = countsByYear.get(year) || new Map();
+      programs.forEach((program) => {
+        const count = programMap.get(program)?.size || 0;
+        // Omit empty year/program combinations from the table — the chart
+        // (built from the same data below) still plots them at zero.
+        if (count === 0) return;
+        rows.push({
+          'School Year': year,
+          'Program': program,
+          'Number of Scholars': count,
+        });
+      });
+    });
+    const grandTotal = rows.reduce((sum, r) => sum + r['Number of Scholars'], 0);
+    return withTotalRow(rows, { 'School Year': 'TOTAL', Program: '', 'Number of Scholars': grandTotal });
+  };
+
+  // Chart-ready pivot for the same report: one row per school year, one
+  // numeric field per program (recharts needs {schoolYear, [program]: count}
+  // shaped rows, not the flat table's one-row-per-combination shape). Built
+  // from the exact same countsByYear map as the table above, so they can
+  // never disagree.
+  const generateYearToYearProgramComparisonChart = () => {
+    const { countsByYear, years, programs } = yearToYearProgramCounts();
+    const chartRows = years.map((year) => {
+      const programMap = countsByYear.get(year) || new Map();
+      const row = { schoolYear: year };
+      programs.forEach((program) => {
+        row[program] = programMap.get(program)?.size || 0;
+      });
+      return row;
+    });
+    return { chartRows, programs };
+  };
+
   const generateCostPerGraduate = () => {
     const graduates = getFilteredScholars().filter(a => a.status === 'graduated');
     const rows = graduates.map(s => {
@@ -1934,6 +2048,10 @@ export default function Reports() {
       case 'enrollment-verification': data = generateEnrollmentVerification(); reportName = 'Enrollment_Verification'; break;
       case 'outstanding-payment': data = generateOutstandingPayments(); reportName = 'Outstanding_Payment'; break;
       case 'year-to-year-growth': data = generateYearToYearGrowth(); reportName = 'Year_To_Year_Growth'; break;
+      case 'year-to-year-program-comparison':
+        data = generateYearToYearProgramComparison();
+        reportName = 'Year_To_Year_Program_Comparison';
+        break;
       case 'cost-per-graduate': data = generateCostPerGraduate(); reportName = 'Cost_Per_Graduate'; break;
       case 'status-summary': data = generateStatusSummary(); reportName = 'Status_Summary'; break;
       case 'graduation-report': data = generateGraduationReport(); reportName = 'Graduation_Report'; break;
@@ -1961,7 +2079,20 @@ export default function Reports() {
     const schoolTotals = data.length > 0 && (reportId === 'master-list-all' || reportId === 'masterlist-hierarchy')
       ? computeSchoolTotalsBar(getFilteredScholars())
       : null;
-    return { data, name: reportName, schoolTotals };
+    // Chart pivot for the Year-to-Year Program Comparison report only — every
+    // other report has no chart and these stay null. Built from the same
+    // aggregation as the table above (see yearToYearProgramCounts), so the
+    // chart and table can never disagree.
+    const chart = reportId === 'year-to-year-program-comparison'
+      ? generateYearToYearProgramComparisonChart()
+      : null;
+    return {
+      data,
+      name: reportName,
+      schoolTotals,
+      chartRows: chart?.chartRows || null,
+      chartPrograms: chart?.programs || null,
+    };
   };
 
   const handleReportSelect = (reportId) => {
@@ -2743,6 +2874,34 @@ export default function Reports() {
                   </button>
                 </div>
               </div>
+
+              {/* Year-to-Year Program Comparison chart — only this report
+                  carries chartRows; every other report leaves it null. */}
+              {reportData.chartRows && reportData.chartRows.length > 0 && (
+                <div className="chart-card" style={{ margin: '0 1.5rem 1rem' }}>
+                  <h3 className="chart-title">Scholars per Program, by School Year</h3>
+                  <div className="chart-container">
+                    <ResponsiveContainer width="100%" height={340}>
+                      <BarChart data={reportData.chartRows}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" />
+                        <XAxis dataKey="schoolYear" stroke="var(--text-secondary)" />
+                        <YAxis allowDecimals={false} stroke="var(--text-secondary)" />
+                        <RechartsTooltip
+                          contentStyle={{
+                            backgroundColor: 'var(--card-bg)',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '8px',
+                          }}
+                        />
+                        <RechartsLegend />
+                        {(reportData.chartPrograms || []).map((program, idx) => (
+                          <Bar key={program} dataKey={program} name={program} fill={BAR_COLORS[idx % BAR_COLORS.length]} />
+                        ))}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
 
               {/* Report Table */}
               <div className="report-table-wrapper">
