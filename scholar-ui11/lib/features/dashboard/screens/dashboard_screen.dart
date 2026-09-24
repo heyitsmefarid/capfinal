@@ -473,18 +473,27 @@ class DashboardScreen extends ConsumerWidget {
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: _CompactStatCard(
-                      icon: Icons.folder_copy_rounded,
-                      value: '$requirementsDone/$requirementsTotal',
-                      label: 'Requirements',
-                      caption: 'submitted',
-                      color: AppColors.mustard,
-                      progress: requirementsTotal == 0
-                          ? null
-                          : (requirementsDone / requirementsTotal)
-                              .clamp(0.0, 1.0),
-                      onTap: () => context.go('/requirements'),
-                    ),
+                    child: (requirementsSummary?.isLegacyNoRecords ?? false)
+                        ? _CompactStatCard(
+                            icon: Icons.folder_copy_rounded,
+                            value: 'Legacy',
+                            label: 'Requirements',
+                            caption: 'previous system',
+                            color: AppColors.mustard,
+                            onTap: () => context.go('/requirements'),
+                          )
+                        : _CompactStatCard(
+                            icon: Icons.folder_copy_rounded,
+                            value: '$requirementsDone/$requirementsTotal',
+                            label: 'Requirements',
+                            caption: 'submitted',
+                            color: AppColors.mustard,
+                            progress: requirementsTotal == 0
+                                ? null
+                                : (requirementsDone / requirementsTotal)
+                                    .clamp(0.0, 1.0),
+                            onTap: () => context.go('/requirements'),
+                          ),
                   ),
                 ],
                 ),

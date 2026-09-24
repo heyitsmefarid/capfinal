@@ -217,7 +217,7 @@ String _normalizeRequirementStatus(dynamic statusValue, dynamic submittedValue) 
 final firestoreRequirementsSummaryProvider =
     FutureProvider<RequirementsSummary>((ref) async {
   // Re-run when the logged-in student changes, or the catalog updates.
-  ref.watch(currentStudentProvider);
+  final student = ref.watch(currentStudentProvider);
   final catalog = ref.watch(applicationRequirementsCatalogProvider)
       .maybeWhen(data: (list) => list, orElse: () => const <Map<String, dynamic>>[]);
 
@@ -227,6 +227,18 @@ final firestoreRequirementsSummaryProvider =
         submitted: 0,
         verified: 0,
         rejected: 0,
+      );
+
+  // A scholar imported before ISKONNECT existed (see scholarImport.js) never
+  // went through this app's application workflow, so a completely absent
+  // `requirements` map means "not applicable," not "submitted nothing."
+  RequirementsSummary legacySummary(int total) => RequirementsSummary(
+        total: total,
+        pending: 0,
+        submitted: 0,
+        verified: 0,
+        rejected: 0,
+        isLegacyNoRecords: true,
       );
 
   final studentId = await ScholarFirestoreService.currentStudentId();
@@ -239,7 +251,10 @@ final firestoreRequirementsSummaryProvider =
   final raw = doc?['requirements'];
   final map = raw is Map ? Map<String, dynamic>.from(raw) : map0;
   final defs = _resolveRequirementDefs(catalog, map);
-  if (raw is! Map) return emptySummary(defs.length);
+  if (raw is! Map) {
+    if (student?.source == 'bulkImport') return legacySummary(defs.length);
+    return emptySummary(defs.length);
+  }
 
   int verified = 0, submitted = 0, rejected = 0, pending = 0;
 

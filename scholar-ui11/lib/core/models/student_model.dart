@@ -77,6 +77,12 @@ class StudentModel {
   // Emergency contact name and phone number.
   final String? emergencyContactName;
   final String? emergencyContactPhone;
+  // Provenance stamp written only by the bulk migration import (see
+  // backend/functions/src/http/scholarImport.js) — 'bulkImport' for a scholar
+  // who predates ISKONNECT and was migrated in directly, never set by the
+  // normal registration/approval flow. Read-only here; the scholar app never
+  // writes this field.
+  final String? source;
 
   StudentModel({
     String? id,
@@ -124,6 +130,7 @@ class StudentModel {
     this.grantSchoolYear,
     this.emergencyContactName,
     this.emergencyContactPhone,
+    this.source,
   }) : scholarshipStatus =
            scholarshipStatus ??
            (studentType == StudentType.scholar ? 'Active' : 'Pending'),
@@ -291,6 +298,7 @@ class StudentModel {
     String? grantSchoolYear,
     String? emergencyContactName,
     String? emergencyContactPhone,
+    String? source,
   }) {
     return StudentModel(
       id: id ?? this.id,
@@ -338,6 +346,7 @@ class StudentModel {
       grantSchoolYear: grantSchoolYear ?? this.grantSchoolYear,
       emergencyContactName: emergencyContactName ?? this.emergencyContactName,
       emergencyContactPhone: emergencyContactPhone ?? this.emergencyContactPhone,
+      source: source ?? this.source,
     );
   }
 
@@ -387,6 +396,7 @@ class StudentModel {
       'grantSchoolYear': grantSchoolYear,
       'emergencyContactName': emergencyContactName,
       'emergencyContactPhone': emergencyContactPhone,
+      'source': source,
     };
   }
 
@@ -454,6 +464,7 @@ class StudentModel {
       grantSchoolYear: json['grantSchoolYear']?.toString(),
       emergencyContactName: json['emergencyContactName']?.toString(),
       emergencyContactPhone: json['emergencyContactPhone']?.toString(),
+      source: json['source']?.toString(),
     );
   }
 }

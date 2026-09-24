@@ -115,6 +115,14 @@ class RequirementsSummary {
   final int submitted;
   final int verified;
   final int rejected;
+  // True only for a scholar imported before ISKONNECT existed (source ==
+  // 'bulkImport') who has no `requirements` map in Firestore at all — i.e.
+  // they never went through this app's application workflow, so there is
+  // nothing to count. Screens must check this before rendering an X/total
+  // count: 0/[total] would wrongly read as "submitted nothing," when the real
+  // meaning is "requirements were completed under the previous system, before
+  // this workflow existed."
+  final bool isLegacyNoRecords;
 
   RequirementsSummary({
     required this.total,
@@ -122,6 +130,7 @@ class RequirementsSummary {
     required this.submitted,
     required this.verified,
     required this.rejected,
+    this.isLegacyNoRecords = false,
   });
 
   double get completionRate => total > 0 ? (verified / total) * 100 : 0;

@@ -10,6 +10,7 @@ import 'package:iskonnectttt/core/models/requirement_model.dart';
 import 'package:iskonnectttt/core/services/scholar_firestore_service.dart';
 import 'package:iskonnectttt/core/services/storage_service.dart';
 import 'package:iskonnectttt/core/theme/app_theme.dart';
+import 'package:iskonnectttt/features/auth/providers/auth_provider.dart';
 import 'package:iskonnectttt/features/requirements/providers/requirements_provider.dart';
 import 'package:iskonnectttt/shared/widgets/dialog_helper.dart';
 import 'package:iskonnectttt/shared/widgets/inline_pdf_preview.dart';
@@ -32,6 +33,19 @@ class RequirementsScreen extends ConsumerWidget {
     final completedCount = summary.submitted + summary.verified;
     final progress =
         summary.total > 0 ? completedCount / summary.total : 0.0;
+
+    // A scholar imported before ISKONNECT existed (source == 'bulkImport')
+    // never went through this app's application workflow, so a completely
+    // blank requirements list here means "not applicable," not "submitted
+    // nothing" — showing "0/8" would wrongly read as a failure to comply.
+    // If any real record exists (a fileName/fileUrl, or a non-Pending status),
+    // that's a genuine current requirement and this screen shows it normally.
+    final student = ref.watch(currentStudentProvider);
+    final isLegacyNoRecords = student?.source == 'bulkImport' &&
+        !isLoading &&
+        requirements.isNotEmpty &&
+        requirements.every((r) =>
+            r.status == 'Pending' && r.fileName == null && r.fileUrl == null);
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -75,11 +89,15 @@ class RequirementsScreen extends ConsumerWidget {
             ),
             const SliverToBoxAdapter(child: SizedBox(height: 8)),
 
-            // Progress Card - Compact Design
+            // Progress Card - Compact Design. A legacy/imported scholar with
+            // no current requirement records gets a distinct banner instead —
+            // see isLegacyNoRecords above.
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Container(
+                child: isLegacyNoRecords
+                    ? const _LegacyRequirementsBanner()
+                    : Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
@@ -611,6 +629,73 @@ class _ModernBackButton extends StatelessWidget {
 }
 
 /// Compact Status Chip
+/// Shown instead of the numeric progress card for a scholar imported before
+/// ISKONNECT existed (source == 'bulkImport') with no `requirements` map in
+/// Firestore — see isLegacyNoRecords in RequirementsScreen.build. Replaces a
+/// misleading "0/8 Complete" with an explanation of why there's nothing to
+/// show here.
+class _LegacyRequirementsBanner extends StatelessWidget {
+  const _LegacyRequirementsBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [AppColors.mustard, AppColors.mustardLight],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.primary, width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.mustard.withValues(alpha: 0.3),
+            blurRadius: 16,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(13),
+            ),
+            child: const Icon(Icons.history_edu_rounded, color: Colors.white, size: 22),
+          ),
+          const SizedBox(width: 14),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Legacy Scholar',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Requirements were completed under the previous system, '
+                  'before this app existed.',
+                  style: TextStyle(fontSize: 12.5, color: Colors.white),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ).animate().fadeIn(delay: 200.ms).slideY(begin: 0.1);
+  }
+}
+
 class _CompactStatusChip extends StatelessWidget {
   final String label;
   final int count;
