@@ -420,9 +420,9 @@ class _ScholarshipApplicationScreenState
         .loadFromMap(Map<String, dynamic>.from(raw));
   }
 
-  Future<void> _persistRequirements() async {
+  Future<bool> _persistRequirements() async {
     final requirements = ref.read(applicationRequirementsProvider);
-    await ref
+    return ref
         .read(authStateProvider.notifier)
         .saveApplicationRequirements(_buildRequirementsMap(requirements));
   }
@@ -567,7 +567,7 @@ class _ScholarshipApplicationScreenState
       );
       if (submitted == true) {
         ref.read(applicationRequirementsProvider.notifier).markAsUploaded(
-          '1',
+          requirement.id,
           'BFCSP Application Form (submitted)',
           fileSize: 0,
         );
@@ -765,24 +765,44 @@ class _ScholarshipApplicationScreenState
           'Submit your scholarship application now? You can still resubmit documents if an evaluator rejects a requirement.',
       confirmText: 'Submit',
       onConfirm: () async {
-        // This is the moment a document actually becomes submitted: promote
-        // every attached-but-unsent file first, so the map built below reports
-        // them to the admin as submitted rather than merely uploaded.
-        ref.read(applicationRequirementsProvider.notifier).markUploadedAsSubmitted();
-
-        // Build a requirements map keyed by the admin panel's requirement keys
-        // so the City Education Department admin can see what was submitted.
+        // Build the requirements map as it WOULD look once every
+        // attached-but-unsent file is promoted to submitted, without
+        // mutating the provider yet — local state must not change until the
+        // writes below are confirmed, so a failure leaves the screen exactly
+        // as it was (no false "Submitted" left showing locally either).
         final requirements = ref.read(applicationRequirementsProvider);
-        final requirementsMap = _buildRequirementsMap(requirements);
+        final promoted = requirements.map((r) {
+          if (r.status != RequirementStatus.uploaded) return r;
+          return r.copyWith(status: RequirementStatus.submitted, submittedAt: DateTime.now());
+        }).toList();
+        final requirementsMap = _buildRequirementsMap(promoted);
 
-        await ref.read(authStateProvider.notifier).updateApplicationStatus('submitted');
-        await ref
+        final statusSaved =
+            await ref.read(authStateProvider.notifier).updateApplicationStatus('submitted');
+        final requirementsSaved = await ref
             .read(authStateProvider.notifier)
             .saveApplicationRequirements(requirementsMap);
 
         if (!context.mounted) {
           return;
         }
+
+        // Only claim success — and only promote local state — once both
+        // writes are actually confirmed. Showing "Submitted" when Firestore
+        // never received the write is exactly what previously left the
+        // applicant stuck on "Not Submitted" with no indication anything had
+        // gone wrong.
+        if (!statusSaved || !requirementsSaved) {
+          DialogHelper.showErrorDialog(
+            context: context,
+            title: 'Submission Failed',
+            message:
+                'Your application could not be submitted. Please check your connection and try again.',
+          );
+          return;
+        }
+
+        ref.read(applicationRequirementsProvider.notifier).markUploadedAsSubmitted();
 
         DialogHelper.showSuccessDialog(
           context: context,

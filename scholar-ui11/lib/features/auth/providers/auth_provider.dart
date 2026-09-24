@@ -826,15 +826,29 @@ class AuthNotifier extends StateNotifier<AuthState> {
     _saveStudentToFirestoreSafely(state.student!);
   }
 
-  // Update applicant application status
-  Future<void> updateApplicationStatus(String status) async {
-    if (state.student == null) return;
+  // Update applicant application status. Unlike most of this notifier's
+  // setters, this does NOT optimistically flip local state first: it writes
+  // the single `applicationStatus` field to Firestore (matching
+  // firestore.rules' self-service allowlist, which only permits changing
+  // this field via the pending->submitted transition), and only updates local
+  // state/storage once that write actually succeeds. Returns whether it
+  // succeeded so callers (e.g. the Submit Application flow) can show a real
+  // error instead of a false "submitted" success.
+  Future<bool> updateApplicationStatus(String status) async {
+    if (state.student == null) return false;
+    final studentId = state.student!.id;
+
+    try {
+      await _saveStudentFieldsToFirestore(studentId, {'applicationStatus': status});
+    } catch (_) {
+      return false;
+    }
 
     final updatedStudent = state.student!.copyWith(applicationStatus: status);
     state = state.copyWith(student: updatedStudent);
     _registeredStudents[updatedStudent.id] = updatedStudent;
     await _saveStudentsToStorage();
-    await _saveStudentToFirestoreSafely(updatedStudent);
+    return true;
   }
 
   /// Marks the one-time approval celebration as seen for the current
@@ -863,20 +877,24 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   /// Persist submitted scholarship requirements to Firestore so the admin
-  /// panel can see which documents the applicant has submitted.
-  Future<void> saveApplicationRequirements(
+  /// panel can see which documents the applicant has submitted. Returns
+  /// whether the write actually succeeded — see [updateApplicationStatus].
+  Future<bool> saveApplicationRequirements(
     Map<String, dynamic> requirements,
   ) async {
-    if (state.student == null) return;
+    if (state.student == null) return false;
     await _ensureAnonymousAuth();
     final collection = _studentsCollection;
-    if (collection == null) return;
+    if (collection == null) return false;
     try {
       await collection
           .doc(state.student!.id)
           .set({'requirements': requirements}, SetOptions(merge: true))
           .timeout(const Duration(seconds: 10));
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
 }

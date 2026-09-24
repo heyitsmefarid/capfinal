@@ -42,13 +42,44 @@ service cloud.firestore {
       return isOwner(userId) || isAdmin();
     }
 
-    // ── Users ──────────────────────────────────────────────
+    // A real (non-anonymous) scholar/applicant session may only move their own
+    // `applicationStatus` through the single legitimate self-service
+    // transition — submitting their application — never to an admin-only
+    // status (approved/active/rejected/graduated/disabled/etc.), and never on
+    // someone else's application. If `applicationStatus` isn't part of this
+    // write's diff at all, this check is skipped (the field-allowlist check
+    // in isAllowedSelfUpdate() below still applies to everything else).
+    function isAllowedApplicationStatusChange() {
+      let diffKeys = request.resource.data.diff(resource.data).affectedKeys();
+      return !diffKeys.hasAny(['applicationStatus'])
+          || (resource.data.applicationStatus == 'pending'
+              && request.resource.data.applicationStatus == 'submitted');
+    }
+
     // The admin panel signs in anonymously and has no custom claims, so it must
     // remain fully unrestricted here (isAnonymous()) — unchanged behavior.
     // Real sessions (scholars/applicants, now on real email/password sign-in)
     // are restricted to their own doc (matched by uid) and a narrow field
     // allowlist on update.
-    //
+    function isAllowedSelfUpdate() {
+      return resource.data.uid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['mustChangePassword','passwordChangedAt','activatedAt','lastLogin',
+                         'houseNo','street','barangay','city','province','gender','contactNumber',
+                         'profilePicture','celebrationSeen','rejectionSeen',
+                         // Scholar self-service data the live app already writes to its own
+                         // doc (grades_provider.dart, scholar_firestore_service.dart) —
+                         // distinct from admin-only award-integrity fields like scholarId/
+                         // amountGranted/status, which stay off this allowlist.
+                         'grades','cogSubmissions','corSubmissions','requirements',
+                         // Only the pending->submitted transition validated above; every
+                         // other status value stays admin-only (written via the isAnonymous()
+                         // admin-panel path, not this one).
+                         'applicationStatus'])
+          && isAllowedApplicationStatusChange();
+    }
+
+    // ── Users ──────────────────────────────────────────────
     // Reads stay at signedIn() (any real-or-anonymous session), not narrowed
     // to self-only: Firestore has no field-level read redaction, and
     // messaging_provider.dart's group-chat member lookup (fetchUsersByIds,
@@ -62,17 +93,7 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if signedIn();
       allow create: if isAnonymous() || request.resource.data.uid == request.auth.uid;
-      allow update: if isAnonymous()
-                 || (resource.data.uid == request.auth.uid
-                     && request.resource.data.diff(resource.data).affectedKeys()
-                          .hasOnly(['mustChangePassword','passwordChangedAt','activatedAt','lastLogin',
-                                    'houseNo','street','barangay','city','province','gender','contactNumber',
-                                    'profilePicture','celebrationSeen','rejectionSeen',
-                                    // Scholar self-service data the live app already writes to its own
-                                    // doc (grades_provider.dart, scholar_firestore_service.dart) —
-                                    // distinct from admin-only award-integrity fields like scholarId/
-                                    // amountGranted/status, which stay off this allowlist.
-                                    'grades','cogSubmissions','corSubmissions','requirements']));
+      allow update: if isAnonymous() || isAllowedSelfUpdate();
       allow delete: if isAnonymous();
     }
 
