@@ -19,6 +19,7 @@ for (const spec of times) {
   let t = parseFloat(spec);
   if (isNaN(t)) { const [id, off] = spec.split('+'); t = scenes.find((s) => s[0] === id)[1] + parseFloat(off || 0); }
   await page.evaluate((t) => window.seek(t), t);
-  await page.screenshot({ path: `${outDir}/${spec.replace(/[^\w.+-]/g, '_')}.jpg`, type: 'jpeg', quality: 80 });
+  const png = process.env.PNG === '1';
+  await page.screenshot({ path: `${outDir}/${spec.replace(/[^\w.+-]/g, '_')}.${png ? 'png' : 'jpg'}`, type: png ? 'png' : 'jpeg', ...(png ? {} : { quality: 80 }) });
 }
 await browser.close(); srv.close();
