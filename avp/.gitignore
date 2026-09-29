@@ -1,0 +1,8 @@
+build/segments*/
+build/voice/
+build/stems/
+build/mix.wav
+src/node_modules
+src/venv
+*.onnx
+voices-*.bin
