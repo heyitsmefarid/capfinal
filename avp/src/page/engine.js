@@ -227,7 +227,8 @@ async function build() {
   // Warm tint while describing problems.
   const probs = scenes.filter((s) => s.section === 'problems' || s.id === 'process_manual');
   TL.to(warm, { opacity: 1, duration: 1.5 }, probs[0].start + 1);
-  TL.to(warm, { opacity: 0, duration: 2 }, probs[probs.length - 1].start + 3);
+  const bridge = scenes.find((s) => s.section === 'bridge');
+  TL.to(warm, { opacity: 0, duration: 2 }, bridge ? bridge.start + 1 : probs[probs.length - 1].start + 3);
   // Section-change whooshes (non-chapter scenes get their own cues).
   // Fade from / to black.
   TL.fromTo(black, { opacity: 1 }, { opacity: 0, duration: 1.6, ease: 'power1.inOut', immediateRender: true }, 0.1);

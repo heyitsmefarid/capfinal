@@ -64,10 +64,18 @@ scene('journey_intro', (c) => {
         <div style="font:600 17px/1.2 var(--head);margin-top:6px">${labels[i]}</div></div></div>`);
     pop(tl, m, t0 + 0.2 + i * 0.18, { s: 0.5 });
   });
-  const walker = c.add(`<div class="abs" style="width:64px;height:64px;margin:-32px 0 0 -32px;border-radius:50%;background:var(--lime);color:#0b232a;display:grid;place-items:center;box-shadow:0 0 30px rgba(212,255,0,.7)">${I('user', 32, 2.4)}</div>`);
+  const juan = mascot(c, 0, 0, 0.42);
+  const tag = c.add(`<div class="abs chip lime sm" style="font-size:15px;padding:6px 12px">Juan</div>`);
   const len = road.getTotalLength();
-  c.hook((t) => { const k = ease(clamp((t - t0 - 0.6) / (c.end(0) - t0 + 0.2))); const q = road.getPointAtLength(len * (0.03 + 0.97 * k)); walker.style.left = q.x + 'px'; walker.style.top = q.y + 'px'; walker.style.opacity = t < t0 + 0.4 ? 0 : 1; });
-  const head = c.add(`<div class="abs" style="top:170px;width:100%;text-align:center"><div class="kicker">From application to graduation, and beyond</div><div class="h2" style="margin-top:14px">One student's journey</div></div>`);
+  const tW0 = t0 + 0.6, tW1 = c.end(0) + 0.6;
+  juan.walk(tW0, tW1 - tW0).cheer(tW1, c.dur - tW1);
+  c.hook((t) => {
+    const k = ease(clamp((t - tW0) / (tW1 - tW0))); const q = road.getPointAtLength(len * (0.03 + 0.97 * k));
+    juan.el.style.left = q.x - 42 + 'px'; juan.el.style.top = q.y - 128 + 'px';
+    tag.style.left = q.x - 24 + 'px'; tag.style.top = q.y - 170 + 'px';
+    juan.el.style.opacity = tag.style.opacity = t < t0 + 0.3 ? 0 : 1;
+  });
+  const head = c.add(`<div class="abs" style="top:170px;width:100%;text-align:center"><div class="kicker">Meet Juan, a future scholar from Calapan</div><div class="h2" style="margin-top:14px">Juan's ISKONNECT journey</div></div>`);
   inn(tl, head, t0, { y: 20 });
 });
 
@@ -289,6 +297,9 @@ scene('step4_scholar', (c) => {
   const tC = c.at(0, 0);
   c.hook((t) => { const k = t - tC; bits.forEach((b) => { const y = -30 + (k - b.d) * b.s; b.e.style.transform = `translate(${b.x + Math.sin(k * 3 + b.w) * 16}px, ${y}px) rotate(${k * 200 + b.w * 40}deg)`; b.e.style.opacity = k > b.d ? 1 : 0; }); });
   c.cue('chime', tC + 0.1, 0.5); c.cue('shimmer', tC + 0.2, 0.4);
+  const juan = mascot(c, 480, 560, 0.85);
+  inn(tl, juan.el, tC - 0.2, { y: 60 });
+  juan.cheer(tC + 0.2, 2.6).jump(c.word(1, 'active') + 0.1, 2);
   // status morph
   const st = c.add(`<div class="abs" style="left:760px;top:330px;display:flex;align-items:center;gap:30px">
     <span class="pill ap" style="font-size:30px;padding:18px 30px;background:rgba(255,255,255,.08);color:#b9d3d6;border:1px solid rgba(255,255,255,.18)">APPLICANT</span>

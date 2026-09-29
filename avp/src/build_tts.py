@@ -33,6 +33,7 @@ TEXT_FIXES = [
     (r"\bISKONNECT\b", "Iskonnect"),
     (r"\bISKO\b", "Isko"),
     (r"\bCONNECT\b", "connect"),
+    (r"\bKONNECT\b", "connect"),
     (r"\bCED\b", "C-E-D"),
 ]
 PHONEME_FIXES = [

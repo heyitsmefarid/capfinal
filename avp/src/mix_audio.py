@@ -50,8 +50,9 @@ SECTIONS = {
     "problem": dict(prog=PROG_MINOR, pad=0.85, arp=0.28, bass=0.5, kick=0.0, hat=0.0, dens=4),
     "process": dict(prog=PROG_MINOR, pad=0.75, arp=0.42, bass=0.6, kick=0.0, hat=0.10, dens=8),
     "problems": dict(prog=PROG_MINOR, pad=0.75, arp=0.40, bass=0.6, kick=0.0, hat=0.10, dens=8),
-    "intro": dict(prog=PROG_MAJOR, pad=0.85, arp=0.55, bass=0.7, kick=0.0, hat=0.12, dens=8),
-    "overview": dict(prog=PROG_MAJOR, pad=0.75, arp=0.55, bass=0.7, kick=0.22, hat=0.2, dens=8),
+    "bridge": dict(prog=["F", "G", "Am", "G"], pad=0.8, arp=0.5, bass=0.6, kick=0.0, hat=0.16, dens=8),
+    "intro": dict(prog=PROG_MAJOR, pad=0.9, arp=0.65, bass=0.8, kick=0.38, hat=0.28, dens=8),
+    "overview": dict(prog=PROG_MAJOR, pad=0.75, arp=0.6, bass=0.75, kick=0.36, hat=0.28, dens=8),
     "journey": dict(prog=PROG_MAJOR, pad=0.65, arp=0.55, bass=0.7, kick=0.32, hat=0.26, dens=8),
     "benefits": dict(prog=PROG_BUILD, pad=0.95, arp=0.7, bass=0.8, kick=0.4, hat=0.3, dens=8),
     "closing": dict(prog=["F", "G"], pad=1.0, arp=0.5, bass=0.8, kick=0.0, hat=0.0, dens=8),
@@ -143,31 +144,27 @@ def build_music(timeline, total):
                 cur = name
         return cur
 
-    closing_start = next(st for st, n in sec_starts if n == "closing")
-    n_bars = int(np.ceil(total / BAR))
-    # chord index restarts at each section so progressions begin on the tonic
     bar_info = []
-    last_sec, idx = None, 0
-    for b in range(n_bars):
-        t0 = b * BAR
-        sec = section_at(t0 + BAR * 0.5)
-        if sec != last_sec:
-            idx, last_sec = 0, sec
+    for j, (st, sec) in enumerate(sec_starts):
+        end = sec_starts[j + 1][0] if j + 1 < len(sec_starts) else total
         cfg = SECTIONS[sec]
-        chord = cfg["prog"][idx % len(cfg["prog"])]
-        if sec == "closing" and idx >= 2:
-            chord = "C"
-        bar_info.append((t0, sec, chord, idx))
-        idx += 1
+        idx, t0 = 0, st
+        while t0 < end - 0.05:
+            chord = cfg["prog"][idx % len(cfg["prog"])]
+            if sec == "closing" and idx >= 2:
+                chord = "C"
+            bar_info.append((t0, sec, chord, idx, min(BAR, end - t0)))
+            idx += 1
+            t0 += BAR
 
-    for b, (t0, sec, chord, idx) in enumerate(bar_info):
+    for b, (t0, sec, chord, idx, blen) in enumerate(bar_info):
         cfg = SECTIONS[sec]
         notes, root = CH[chord]
         start = int(t0 * SR)
         final_hold = sec == "closing" and idx >= 2
         # pad: sustained, detuned, soft attack; the final chord rings to the end
         if not (final_hold and idx > 2):
-            dur = (total - t0 + 0.2) if final_hold else BAR + 1.6
+            dur = (total - t0 + 0.2) if final_hold else blen + 1.6
             n = int(dur * SR)
             t = np.arange(n) / SR
             e = env_ar(n, 0.9 if not final_hold else 1.6, 1.6 if not final_hold else 4.5)
@@ -186,7 +183,7 @@ def build_music(timeline, total):
                     y = (np.sin(2 * np.pi * f * t) + 0.25 * np.sin(4 * np.pi * f * t)) * np.exp(-t / 0.9) * env_ar(n, 0.02, 0.1)
                     add(low, y * 0.22, start + int(beat * BEAT * SR), gain=cfg["bass"])
             else:
-                dur = (total - t0) if final_hold else BAR + 0.3
+                dur = (total - t0) if final_hold else blen + 0.3
                 n = int(dur * SR)
                 t = np.arange(n) / SR
                 y = (np.sin(2 * np.pi * f * t) + 0.2 * np.sin(4 * np.pi * f * t)) * env_ar(n, 0.25, 1.2 if final_hold else 0.4)
@@ -199,6 +196,8 @@ def build_music(timeline, total):
             if final_hold:  # one last rising arpeggio into the tonic
                 pattern, step, tones = [0, 1, 2, 3, 4, 5], BEAT / 2, [60, 64, 67, 72, 76, 79]
             for k, p in enumerate(pattern):
+                if k * step > blen - 0.05 and not final_hold:
+                    break
                 vel = 0.8 if k % 2 == 0 else 0.6
                 if final_hold:
                     vel = 0.9
@@ -207,6 +206,8 @@ def build_music(timeline, total):
         # percussion
         if cfg["kick"] > 0:
             for beat in (0, 2):
+                if beat * BEAT > blen - 0.05:
+                    continue
                 n = int(0.35 * SR)
                 t = np.arange(n) / SR
                 ph = 2 * np.pi * np.cumsum(46 + 70 * np.exp(-t / 0.035)) / SR
@@ -214,6 +215,8 @@ def build_music(timeline, total):
                 add(perc, y * 0.2, start + int(beat * BEAT * SR), gain=cfg["kick"])
         if cfg["hat"] > 0:
             for k in range(8):
+                if k * BAR / 8 > blen - 0.02:
+                    break
                 n = int(0.08 * SR)
                 t = np.arange(n) / SR
                 y = highpass(RNG.standard_normal(n), 6500) * np.exp(-t / (0.018 if k % 2 == 0 else 0.03))
@@ -314,11 +317,42 @@ def sfx(name):
             s = int(k * 0.09 * SR)
             y[s:s + len(p)] += p[: len(y) - s] * 0.12
         return y
+    if name == "riser":
+        t = T(2.4)
+        k = t / 2.4
+        noise = RNG.standard_normal(len(t))
+        out = np.zeros(len(t))
+        for i, (lo, hi) in enumerate(zip(np.geomspace(400, 4000, 16), np.geomspace(1200, 12000, 16))):
+            a, b = i * len(t) // 16, (i + 1) * len(t) // 16
+            out[a:b] = bandpass(noise, lo, hi)[a:b]
+        tone = np.sin(2 * np.pi * np.cumsum(200 + 900 * k ** 2) / SR) * 0.25
+        return (out * 0.35 + tone) * k ** 2.2 * np.clip((2.4 - t) / 0.06, 0, 1)
+    if name == "flip":
+        t = T(0.3)
+        y = bandpass(RNG.standard_normal(len(t)), 1500, 6000) * np.sin(np.pi * np.clip(t / 0.22, 0, 1)) * 0.3
+        s0 = int(0.2 * SR)
+        y[s0:s0 + int(0.03 * SR)] += np.sin(2 * np.pi * 900 * T(0.03)) * np.exp(-T(0.03) / 0.006) * 0.4
+        return y
+    if name == "snap":
+        t = T(0.6)
+        y = np.sin(2 * np.pi * 1300 * t) * np.exp(-t / 0.01) * 0.5
+        y += highpass(RNG.standard_normal(len(t)), 3000) * np.exp(-t / 0.08) * (RNG.random(len(t)) > 0.85) * 0.6
+        y += np.sin(2 * np.pi * np.cumsum(120 + 200 * np.exp(-t / 0.03)) / SR) * np.exp(-t / 0.12) * 0.4
+        return y
+    if name == "boing":
+        t = T(0.35)
+        f = 300 + 500 * (1 - np.exp(-t / 0.08))
+        return np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-t / 0.12) * (1 + 0.3 * np.sin(2 * np.pi * 18 * t)) * 0.3
+    if name == "thud":
+        t = T(0.7)
+        y = np.sin(2 * np.pi * np.cumsum(70 + 60 * np.exp(-t / 0.03)) / SR) * np.exp(-t / 0.16) * 0.6
+        return y + bandpass(RNG.standard_normal(len(t)), 300, 3000) * np.exp(-t / 0.08) * 0.3
     raise ValueError(name)
 
 
 SFX_GAIN = {"pop": 0.35, "tick": 0.45, "tap": 0.6, "whoosh": 0.55, "stamp": 0.7, "paper": 0.8, "chime": 0.8, "ding": 0.9,
-            "beep": 0.9, "alert": 0.9, "shimmer": 0.9, "impact": 0.8, "swell": 0.9, "resolve": 0.9}
+            "beep": 0.9, "alert": 0.9, "shimmer": 0.9, "impact": 0.8, "swell": 0.9, "resolve": 0.9,
+            "riser": 0.8, "flip": 0.8, "snap": 0.9, "boing": 0.7, "thud": 0.8}
 
 
 def main():
@@ -343,6 +377,13 @@ def main():
     print("synthesizing music…")
     music = build_music(timeline, total)
     music *= db(-27) / (np.sqrt(np.mean(music ** 2)) + 1e-9)
+    # dramatic pause: the music drops out just before each 'mbreak' cue
+    for c in [c for c in cues if c["name"] == "mbreak"]:
+        e = np.ones(n)
+        a, b = int((c["t"] - 1.4) * SR), int(c["t"] * SR)
+        e[a:b] = np.linspace(1, 0.06, b - a)
+        music *= e[:, None]
+    cues = [c for c in cues if c["name"] != "mbreak"]
 
     # duck music under the voice
     env = np.abs(voice[:, 0])

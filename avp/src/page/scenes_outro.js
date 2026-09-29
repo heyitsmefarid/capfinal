@@ -61,4 +61,7 @@ scene('closing', (c) => {
   const line = c.add(`<div class="abs" style="left:560px;top:690px;width:800px;height:2px;background:linear-gradient(90deg,transparent,rgba(78,205,196,.7),transparent)"></div>`);
   tl.fromTo(line, { scaleX: 0 }, { scaleX: 1, duration: 1.2, ease: 'power2.inOut' }, c.end(1) + 0.3);
   c.cue('resolve', c.end(1) + 0.4, 0.8);
+  const juan = mascot(c, 1650, 650, 0.72);
+  inn(tl, juan.el, c.end(1) + 0.9, { y: 80, d: 0.8, e: 'back.out(1.5)' });
+  juan.wave(c.end(1) + 1.5, 3.2, 4);
 });

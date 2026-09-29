@@ -4,43 +4,61 @@
   "speed": 1.0,
   "scenes": [
     {
-      "id": "open_city", "section": "problem",
-      "pre": 2.2, "post": 0.6,
+      "id": "open_city",
+      "section": "problem",
+      "pre": 2.2,
+      "post": 0.6,
       "lines": [
         "In Calapan City, education opens doors, and scholarships help keep them open.",
         "Every year, the City Education Department, or CED, supports deserving students through its scholarship program."
       ]
     },
     {
-      "id": "open_paper", "section": "problem",
-      "pre": 0.4, "post": 0.6,
+      "id": "open_paper",
+      "section": "problem",
+      "pre": 0.4,
+      "post": 0.6,
       "lines": [
         "But behind every scholar is a trail of paper: application forms, photocopied documents, and requirements submitted in person.",
         "Records are kept in folders, logbooks, and spreadsheets, and they are checked and updated by hand."
       ]
     },
     {
-      "id": "open_queue", "section": "problem",
-      "pre": 0.4, "post": 0.8,
+      "id": "open_queue",
+      "section": "problem",
+      "pre": 0.4,
+      "post": 0.8,
       "lines": [
         "Applicants line up to submit their requirements, while staff sort, verify, and file each one manually.",
         "As the number of scholars grows, keeping everything organized becomes harder."
       ]
     },
     {
-      "id": "title", "section": "problem",
-      "pre": 0.4, "post": 1.2,
+      "id": "title",
+      "section": "problem",
+      "pre": 0.4,
+      "post": 1.2,
       "lines": [
-        {"t": "This is where our project begins.", "gap": 1.6},
-        {"t": "ISKONNECT: a Mobile-Based Scholarship Management System for the Calapan City Education Department.", "gap": 0.8},
+        {
+          "t": "This is where our project begins.",
+          "gap": 1.6
+        },
+        {
+          "t": "ISKONNECT: a Mobile-Based Scholarship Management System for the Calapan City Education Department.",
+          "gap": 0.8
+        },
         "It was developed to connect scholarship applicants, scholars, and CED through one centralized digital platform."
       ]
     },
-
     {
-      "id": "process_applicant", "section": "process",
-      "chapter": {"num": "01", "title": "The Current Scholarship Process"},
-      "pre": 3.0, "post": 0.6,
+      "id": "process_applicant",
+      "section": "process",
+      "chapter": {
+        "num": "01",
+        "title": "The Current Scholarship Process"
+      },
+      "pre": 3.0,
+      "post": 0.6,
       "lines": [
         "Let's first look at how the scholarship process generally works today.",
         "An applicant submits the requirements, takes the examination, and goes through an interview.",
@@ -48,8 +66,10 @@
       ]
     },
     {
-      "id": "process_scholar", "section": "process",
-      "pre": 0.4, "post": 0.6,
+      "id": "process_scholar",
+      "section": "process",
+      "pre": 0.4,
+      "post": 0.6,
       "lines": [
         "But the journey doesn't end there.",
         "Each semester, scholars submit their subjects, and their grades and attendance are monitored.",
@@ -57,19 +77,28 @@
       ]
     },
     {
-      "id": "process_manual", "section": "process",
-      "pre": 0.4, "post": 1.4,
+      "id": "process_manual",
+      "section": "process",
+      "pre": 0.4,
+      "post": 1.4,
       "lines": [
         "Many of these activities still rely on printed documents, spreadsheets, and face-to-face transactions."
       ]
     },
-
     {
-      "id": "problems", "section": "problems",
-      "chapter": {"num": "02", "title": "Existing Problems"},
-      "pre": 3.0, "post": 0.8,
+      "id": "problems",
+      "section": "problems",
+      "chapter": {
+        "num": "02",
+        "title": "Existing Problems"
+      },
+      "pre": 3.0,
+      "post": 0.8,
       "lines": [
-        {"t": "Over time, this manual approach creates real challenges.", "gap": 0.6},
+        {
+          "t": "Over time, this manual approach creates real challenges.",
+          "gap": 0.6
+        },
         "Scholars are difficult to track throughout their scholarship journey.",
         "Records are paper-based and maintained by hand.",
         "Grades and attendance are hard to monitor.",
@@ -81,66 +110,117 @@
       ]
     },
     {
-      "id": "problems_turn", "section": "problems",
-      "pre": 0.4, "post": 1.0,
+      "id": "whatif",
+      "section": "bridge",
+      "chapter": {
+        "num": "03",
+        "title": "A Better Way"
+      },
+      "pre": 3.0,
+      "post": 1.3,
       "lines": [
-        "These are not failures of people. They are signs that the process has outgrown paper.",
-        "What CED needs is a centralized, digital solution."
-      ]
-    },
-
-    {
-      "id": "intro_logo", "section": "intro",
-      "chapter": {"num": "03", "title": "Introducing ISKONNECT"},
-      "pre": 3.0, "post": 1.0,
-      "lines": [
-        {"t": "Introducing ISKONNECT.", "gap": 1.2},
-        "The name brings together two ideas.",
-        "ISKO, a familiar Filipino term for a scholar.",
-        "And CONNECT, the link between scholars and the Calapan City Education Department.",
-        "ISKONNECT centralizes scholarship information, processes, monitoring, communication, and records in one platform."
-      ]
-    },
-
-    {
-      "id": "overview_arch", "section": "overview",
-      "chapter": {"num": "04", "title": "System Overview"},
-      "pre": 3.0, "post": 0.6,
-      "lines": [
-        "ISKONNECT is made up of connected components.",
-        "The Student App lets applicants and scholars manage their scholarship right from their phones.",
-        "Personal and scholarship information, requirements, subjects, grades, attendance, announcements, schedules, messages, and scholarship status are all in one place.",
-        "Everything is stored in a central backend and database, which also powers the CED Admin Dashboard."
-      ]
-    },
-    {
-      "id": "overview_admin", "section": "overview",
-      "pre": 0.4, "post": 0.6,
-      "lines": [
-        "Through the dashboard, authorized CED staff manage applicants and scholars, requirements, grades, attendance, announcements, schedules, and reports.",
-        "They can also manage documents, scholar status and history, and communication with scholars."
+        {
+          "t": "None of this is anyone's fault. The process has simply outgrown paper.",
+          "gap": 0.5
+        },
+        {
+          "t": "So we asked ourselves a simple question.",
+          "gap": 0.6
+        },
+        {
+          "t": "What if applying for a scholarship took minutes, not days?",
+          "gap": 0.7
+        },
+        {
+          "t": "What if every requirement, every grade, and every attendance record was just one tap away?",
+          "gap": 0.7
+        },
+        {
+          "t": "What if CED could follow every scholar's journey, all in one place?",
+          "gap": 0.9
+        },
+        "Well, now it can."
       ]
     },
     {
-      "id": "overview_qr", "section": "overview",
-      "pre": 0.4, "post": 0.8,
+      "id": "intro_logo",
+      "section": "intro",
+      "pre": 0.9,
+      "post": 1.0,
       "lines": [
-        "Finally, the QR Scanner App handles attendance, and connects directly with the ISKONNECT system.",
-        "It scans scholar QR codes, works even without an internet connection, stores records locally, and synchronizes them once it's back online."
+        {
+          "t": "Say hello to ISKONNECT!",
+          "gap": 1.1
+        },
+        {
+          "t": "So, what's in a name?",
+          "gap": 0.5
+        },
+        {
+          "t": "ISKO is what Filipinos lovingly call a scholar.",
+          "gap": 0.5
+        },
+        "And KONNECT stands for the connection between scholars and the Calapan City Education Department.",
+        "Put them together, and you get one platform that brings scholarship information, processes, monitoring, communication, and records into one place."
       ]
     },
-
     {
-      "id": "journey_intro", "section": "journey",
-      "chapter": {"num": "05", "title": "The Complete ISKONNECT Process"},
-      "pre": 3.0, "post": 0.8,
+      "id": "overview_arch",
+      "section": "overview",
+      "chapter": {
+        "num": "04",
+        "title": "System Overview"
+      },
+      "pre": 3.0,
+      "post": 0.6,
       "lines": [
-        "Now, let's follow one student's journey through ISKONNECT, from application, to graduation, and beyond."
+        "Behind ISKONNECT is a team of connected components. Let's meet them.",
+        "First up, the Student App: a scholarship companion that lives right in your pocket.",
+        "Profile, scholarship details, requirements, subjects, grades, attendance, announcements, schedules, messages, and scholarship status, all in one app.",
+        "Next is the brain of the operation: the central backend and database, where every record is kept safe and in sync."
       ]
     },
     {
-      "id": "step1_app", "section": "journey", "step": 1, "stepTitle": "Application",
-      "pre": 0.6, "post": 0.8,
+      "id": "overview_admin",
+      "section": "overview",
+      "pre": 0.4,
+      "post": 0.6,
+      "lines": [
+        "Then there's mission control: the CED Admin Dashboard.",
+        "Here, authorized staff manage applicants and scholars, requirements, grades, attendance, announcements, schedules, and reports, along with documents, scholar history, and communication."
+      ]
+    },
+    {
+      "id": "overview_qr",
+      "section": "overview",
+      "pre": 0.4,
+      "post": 2.6,
+      "lines": [
+        "And finally, the attendance hero: the QR Scanner App.",
+        "It scans scholar QR codes in seconds, keeps working even without internet, stores records on the device, and syncs everything once it's back online.",
+        "Together, they form one connected system."
+      ]
+    },
+    {
+      "id": "journey_intro",
+      "section": "journey",
+      "chapter": {
+        "num": "05",
+        "title": "The Complete ISKONNECT Process"
+      },
+      "pre": 3.0,
+      "post": 0.8,
+      "lines": [
+        "Now, let's follow Juan, a future scholar from Calapan, on his journey through ISKONNECT, from application, to graduation, and beyond."
+      ]
+    },
+    {
+      "id": "step1_app",
+      "section": "journey",
+      "step": 1,
+      "stepTitle": "Application",
+      "pre": 0.6,
+      "post": 0.8,
       "lines": [
         "It starts when an applicant opens the ISKONNECT mobile app.",
         "They register or log in, set up their applicant profile, and fill out the scholarship application.",
@@ -149,8 +229,12 @@
       ]
     },
     {
-      "id": "step2_sched", "section": "journey", "step": 2, "stepTitle": "Examination & Interview",
-      "pre": 0.6, "post": 0.8,
+      "id": "step2_sched",
+      "section": "journey",
+      "step": 2,
+      "stepTitle": "Examination & Interview",
+      "pre": 0.6,
+      "post": 0.8,
       "lines": [
         "As the application moves forward, the applicant receives the examination schedule right in the app.",
         "After the examination, the interview schedule follows.",
@@ -158,8 +242,12 @@
       ]
     },
     {
-      "id": "step3_eval", "section": "journey", "step": 3, "stepTitle": "Evaluation & Selection",
-      "pre": 0.6, "post": 0.8,
+      "id": "step3_eval",
+      "section": "journey",
+      "step": 3,
+      "stepTitle": "Evaluation & Selection",
+      "pre": 0.6,
+      "post": 0.8,
       "lines": [
         "Next comes evaluation.",
         "CED considers the examination, the applicant's economic background, and the panel interview.",
@@ -169,8 +257,12 @@
       ]
     },
     {
-      "id": "step4_scholar", "section": "journey", "step": 4, "stepTitle": "Becoming a Scholar",
-      "pre": 0.6, "post": 0.8,
+      "id": "step4_scholar",
+      "section": "journey",
+      "step": 4,
+      "stepTitle": "Becoming a Scholar",
+      "pre": 0.6,
+      "post": 0.8,
       "lines": [
         "For successful applicants, this is a milestone.",
         "Their status changes from applicant to active scholar.",
@@ -178,8 +270,12 @@
       ]
     },
     {
-      "id": "step5_semester", "section": "journey", "step": 5, "stepTitle": "Semester Process",
-      "pre": 0.6, "post": 0.8,
+      "id": "step5_semester",
+      "section": "journey",
+      "step": 5,
+      "stepTitle": "Semester Process",
+      "pre": 0.6,
+      "post": 0.8,
       "lines": [
         "Every semester follows a clear, repeating cycle.",
         "When the semester begins, the scholar submits their enrolled subjects.",
@@ -190,8 +286,12 @@
       ]
     },
     {
-      "id": "step6_qr", "section": "journey", "step": 6, "stepTitle": "QR Attendance",
-      "pre": 0.6, "post": 0.8,
+      "id": "step6_qr",
+      "section": "journey",
+      "step": 6,
+      "stepTitle": "QR Attendance",
+      "pre": 0.6,
+      "post": 0.8,
       "lines": [
         "Attendance at scholarship activities is recorded using QR codes.",
         "Each scholar has a personal QR code on their digital Scholarship ID.",
@@ -202,8 +302,12 @@
       ]
     },
     {
-      "id": "step7_alert", "section": "journey", "step": 7, "stepTitle": "Attendance Alert",
-      "pre": 0.6, "post": 0.8,
+      "id": "step7_alert",
+      "section": "journey",
+      "step": 7,
+      "stepTitle": "Attendance Alert",
+      "pre": 0.6,
+      "post": 0.8,
       "lines": [
         "ISKONNECT also helps CED keep an eye on attendance.",
         "When a scholar reaches two absences, the system flags it and alerts the administrators.",
@@ -212,8 +316,12 @@
       ]
     },
     {
-      "id": "step8_req", "section": "journey", "step": 8, "stepTitle": "Requirements & Documents",
-      "pre": 0.6, "post": 0.8,
+      "id": "step8_req",
+      "section": "journey",
+      "step": 8,
+      "stepTitle": "Requirements & Documents",
+      "pre": 0.6,
+      "post": 0.8,
       "lines": [
         "Requirements are easy to keep track of, too.",
         "Scholars can see exactly which documents are needed, and upload them from the app.",
@@ -222,8 +330,12 @@
       ]
     },
     {
-      "id": "step9_comm", "section": "journey", "step": 9, "stepTitle": "Announcements & Communication",
-      "pre": 0.6, "post": 0.8,
+      "id": "step9_comm",
+      "section": "journey",
+      "step": 9,
+      "stepTitle": "Announcements & Communication",
+      "pre": 0.6,
+      "post": 0.8,
       "lines": [
         "Staying connected is at the heart of ISKONNECT.",
         "An administrator creates an announcement on the dashboard,",
@@ -232,8 +344,12 @@
       ]
     },
     {
-      "id": "step10_reports", "section": "journey", "step": 10, "stepTitle": "Reports & Monitoring",
-      "pre": 0.6, "post": 0.8,
+      "id": "step10_reports",
+      "section": "journey",
+      "step": 10,
+      "stepTitle": "Reports & Monitoring",
+      "pre": 0.6,
+      "post": 0.8,
       "lines": [
         "For CED, all of this information comes together on the admin dashboard.",
         "Scholar and applicant records, academic information, attendance, requirements, and scholarship status are organized by school and category.",
@@ -241,8 +357,12 @@
       ]
     },
     {
-      "id": "step11_history", "section": "journey", "step": 11, "stepTitle": "Scholarship Status & History",
-      "pre": 0.6, "post": 0.8,
+      "id": "step11_history",
+      "section": "journey",
+      "step": 11,
+      "stepTitle": "Scholarship Status & History",
+      "pre": 0.6,
+      "post": 0.8,
       "lines": [
         "ISKONNECT keeps each scholar's history, from start to finish.",
         "From applicant, to scholar, to active status.",
@@ -252,8 +372,12 @@
       ]
     },
     {
-      "id": "step12_cycle", "section": "journey", "step": 12, "stepTitle": "The Complete Cycle",
-      "pre": 0.6, "post": 1.4,
+      "id": "step12_cycle",
+      "section": "journey",
+      "step": 12,
+      "stepTitle": "The Complete Cycle",
+      "pre": 0.6,
+      "post": 1.4,
       "lines": [
         "Put together, this is the complete ISKONNECT cycle.",
         "Application, evaluation, selection, and becoming a scholar.",
@@ -262,11 +386,15 @@
         "One continuous flow, connecting CED, ISKONNECT, and its scholars."
       ]
     },
-
     {
-      "id": "benefits", "section": "benefits",
-      "chapter": {"num": "06", "title": "Expected Improvements"},
-      "pre": 3.0, "post": 0.6,
+      "id": "benefits",
+      "section": "benefits",
+      "chapter": {
+        "num": "06",
+        "title": "Expected Improvements"
+      },
+      "pre": 3.0,
+      "post": 0.6,
       "lines": [
         "So, what does this mean for CED and its scholars?",
         "Centralized scholarship records, and easier scholar monitoring.",
@@ -276,18 +404,24 @@
       ]
     },
     {
-      "id": "benefits_statement", "section": "benefits",
-      "pre": 0.4, "post": 1.6,
+      "id": "benefits_statement",
+      "section": "benefits",
+      "pre": 0.4,
+      "post": 1.6,
       "lines": [
         "ISKONNECT helps make scholarship management more organized, accessible, and connected."
       ]
     },
-
     {
-      "id": "closing", "section": "closing",
-      "pre": 2.4, "post": 7.5,
+      "id": "closing",
+      "section": "closing",
+      "pre": 2.4,
+      "post": 7.5,
       "lines": [
-        {"t": "ISKONNECT.", "gap": 0.9},
+        {
+          "t": "ISKONNECT.",
+          "gap": 0.9
+        },
         "Connecting scholars. Empowering education."
       ]
     }
